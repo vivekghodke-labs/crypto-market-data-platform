@@ -1,0 +1,159 @@
+###############################################################################
+# Column-level documentation and schema tests for Silver layer dbt models.
+###############################################################################
+
+version: 2
+
+models:
+
+  # ─── silver_deduped_trades ─────────────────────────────────────────────────
+  - name: silver_deduped_trades
+    description: >
+      Deduplicated individual BTC/USDT trade events sourced from the Bronze
+      raw_trades table. Guaranteed unique on trade_id. One row per trade.
+      Incrementally maintained — only new Bronze rows are processed on each run.
+      This is the authoritative source for true VWAP and individual trade analytics.
+    columns:
+
+      - name: trade_id
+        description: >
+          Unique trade identifier assigned by the Binance exchange.
+          Primary deduplication key — guaranteed unique in this model.
+        tests:
+          - not_null
+          - unique
+
+      - name: symbol
+        description: Trading pair. Always BTCUSDT for this pipeline.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["BTCUSDT"]
+
+      - name: price
+        description: >
+          Trade execution price in USDT. Stored as NUMERIC for full
+          decimal precision — no float conversion at any pipeline stage.
+        tests:
+          - not_null
+
+      - name: quantity
+        description: Trade quantity in BTC. Stored as NUMERIC.
+        tests:
+          - not_null
+
+      - name: trade_time_ms
+        description: Trade execution timestamp in milliseconds (Unix epoch).
+        tests:
+          - not_null
+
+      - name: event_time_ms
+        description: >
+          Binance event publish timestamp in milliseconds.
+          Typically within milliseconds of trade_time_ms.
+        tests:
+          - not_null
+
+      - name: is_market_maker
+        description: >
+          True if the buyer is the market maker (passive side of the trade).
+          False if the buyer is the taker (aggressive side).
+        tests:
+          - not_null
+
+      - name: ingested_at
+        description: Timestamp when the Beam pipeline wrote this row to BigQuery Bronze.
+        tests:
+          - not_null
+
+      - name: trade_date
+        description: >
+          Calendar date of the trade (UTC), derived from trade_time_ms.
+          Used as the BigQuery partition column for cost-efficient queries.
+        tests:
+          - not_null
+
+      - name: trade_timestamp
+        description: >
+          Trade execution timestamp as BigQuery TIMESTAMP (UTC).
+          Derived from trade_time_ms. Convenience field for time-series queries.
+        tests:
+          - not_null
+
+  # ─── silver_ohlcv_validated ────────────────────────────────────────────────
+  - name: silver_ohlcv_validated
+    description: >
+      Validated and deduplicated 1-minute OHLCV candles. Sourced from the
+      Beam-written silver_curated.ohlcv_1min table. Applies structural
+      OHLCV invariant checks and keeps only the most recent Beam pane
+      per window. Materialised as a view — no storage overhead.
+      This is the primary source for all Gold layer analytical models.
+    columns:
+
+      - name: window_start
+        description: Fixed 1-minute window open time (UTC).
+        tests:
+          - not_null
+
+      - name: window_end
+        description: Fixed 1-minute window close time (UTC). Always window_start + 60s.
+        tests:
+          - not_null
+
+      - name: symbol
+        description: Trading pair symbol.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["BTCUSDT"]
+
+      - name: open
+        description: Price of the first trade in the 1-minute window.
+        tests:
+          - not_null
+
+      - name: high
+        description: Maximum trade price within the 1-minute window.
+        tests:
+          - not_null
+
+      - name: low
+        description: Minimum trade price within the 1-minute window.
+        tests:
+          - not_null
+
+      - name: close
+        description: Price of the last trade in the 1-minute window.
+        tests:
+          - not_null
+
+      - name: volume
+        description: >
+          Notional volume for the window: SUM(price × quantity).
+          Represents total USD value traded, not quantity in BTC.
+        tests:
+          - not_null
+
+      - name: trade_count
+        description: Number of individual trades aggregated into this candle.
+        tests:
+          - not_null
+
+      - name: candle_date
+        description: Calendar date of the candle (UTC). Derived from window_start.
+        tests:
+          - not_null
+
+      - name: candle_hour
+        description: Hour of day (0–23 UTC) of the candle. Derived from window_start.
+        tests:
+          - not_null
+
+      - name: candle_direction
+        description: >
+          Bullish if close >= open. Bearish if close < open.
+          Standard candlestick classification.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["bullish", "bearish"]

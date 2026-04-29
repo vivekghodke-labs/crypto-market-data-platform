@@ -1,0 +1,301 @@
+###############################################################################
+# Column-level documentation and schema tests for Gold layer dbt models.
+###############################################################################
+
+version: 2
+
+models:
+
+  # ─── gold_daily_ohlcv ──────────────────────────────────────────────────────
+  - name: gold_daily_ohlcv
+    description: >
+      Daily OHLCV candlestick data for BTC/USDT. Rolled up from validated
+      1-minute candles. One row per (symbol, trade_date). Open is the first
+      1-minute candle open of the day; Close is the last 1-minute candle close.
+      Primary source for Looker Studio daily price chart.
+    columns:
+
+      - name: trade_date
+        description: Calendar date (UTC) of the daily candle. Partition key.
+        tests:
+          - not_null
+          - unique:
+              name: unique_daily_ohlcv_per_symbol
+              config:
+                where: "symbol = 'BTCUSDT'"
+
+      - name: symbol
+        description: Trading pair symbol.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["BTCUSDT"]
+
+      - name: open
+        description: Opening price — first 1-minute candle open of the day.
+        tests:
+          - not_null
+
+      - name: high
+        description: Daily high — maximum of all 1-minute candle highs.
+        tests:
+          - not_null
+
+      - name: low
+        description: Daily low — minimum of all 1-minute candle lows.
+        tests:
+          - not_null
+
+      - name: close
+        description: Closing price — last 1-minute candle close of the day.
+        tests:
+          - not_null
+
+      - name: volume
+        description: >
+          Daily notional volume in USD: SUM of all 1-minute candle volumes.
+          Each candle volume is SUM(price × quantity) for that minute.
+        tests:
+          - not_null
+
+      - name: trade_count
+        description: Total number of individual trades on this day.
+        tests:
+          - not_null
+
+      - name: candle_count
+        description: Number of 1-minute candles that contributed to this daily candle.
+        tests:
+          - not_null
+
+      - name: price_change
+        description: Close minus open (absolute price change for the day).
+
+      - name: price_change_pct
+        description: Daily price change as a percentage of the opening price.
+
+      - name: candle_direction
+        description: Bullish if close >= open, bearish if close < open.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["bullish", "bearish"]
+
+      - name: dbt_updated_at
+        description: Timestamp of the most recent dbt run that produced this row.
+        tests:
+          - not_null
+
+  # ─── gold_price_stats_24h ──────────────────────────────────────────────────
+  - name: gold_price_stats_24h
+    description: >
+      24-hour rolling price statistics per symbol. One row per symbol.
+      Computed relative to the most recent trade timestamp in the dataset
+      (not wall-clock time) for deterministic, re-runnable results.
+      VWAP is computed using the true industry-standard formula:
+      SUM(price × quantity) / SUM(quantity) at individual trade level.
+    columns:
+
+      - name: symbol
+        description: Trading pair symbol. Primary key at this grain.
+        tests:
+          - not_null
+          - unique
+
+      - name: stats_as_of
+        description: >
+          The anchor timestamp used for the 24h window calculation.
+          Equals the maximum trade_timestamp in silver_deduped_trades.
+        tests:
+          - not_null
+
+      - name: vwap
+        description: >
+          Volume Weighted Average Price over the trailing 24-hour window.
+          Formula: SUM(price × quantity) / SUM(quantity).
+          Computed at individual trade granularity — not approximated from candles.
+          Matches exchange-reported VWAP (Bloomberg, ICE, Refinitiv standard).
+        tests:
+          - not_null
+
+      - name: high_24h
+        description: Maximum trade price in the trailing 24-hour window.
+        tests:
+          - not_null
+
+      - name: low_24h
+        description: Minimum trade price in the trailing 24-hour window.
+        tests:
+          - not_null
+
+      - name: trade_count_24h
+        description: Number of individual trades in the trailing 24-hour window.
+        tests:
+          - not_null
+
+      - name: notional_volume_24h
+        description: >
+          Total notional volume (USD equivalent) in the trailing 24-hour window.
+          Formula: SUM(price × quantity).
+        tests:
+          - not_null
+
+      - name: market_direction_24h
+        description: Bullish if close_24h >= open_24h, bearish otherwise.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["bullish", "bearish"]
+
+      - name: dbt_updated_at
+        description: Timestamp of the most recent dbt run.
+        tests:
+          - not_null
+
+  # ─── gold_trade_volume_hourly ──────────────────────────────────────────────
+  - name: gold_trade_volume_hourly
+    description: >
+      Hourly trade volume and activity metrics per symbol.
+      One row per (symbol, trade_hour UTC). Partitioned by trade_hour.
+      Sourced from silver_deduped_trades for exact volume figures.
+      Used for intraday liquidity pattern analysis in Looker Studio.
+    columns:
+
+      - name: trade_hour
+        description: Hour boundary (UTC) of the aggregation. Partition key.
+        tests:
+          - not_null
+
+      - name: symbol
+        description: Trading pair symbol.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["BTCUSDT"]
+
+      - name: notional_volume
+        description: >
+          Total USD-equivalent volume for the hour.
+          Formula: SUM(price × quantity).
+        tests:
+          - not_null
+
+      - name: btc_volume
+        description: Total BTC quantity traded in the hour.
+        tests:
+          - not_null
+
+      - name: vwap_hourly
+        description: >
+          True VWAP for the hour: SUM(price × quantity) / SUM(quantity).
+          Computed at individual trade level.
+        tests:
+          - not_null
+
+      - name: trade_count
+        description: Number of individual trades in the hour.
+        tests:
+          - not_null
+
+      - name: dbt_updated_at
+        description: Timestamp of the most recent dbt run.
+        tests:
+          - not_null
+
+  # ─── gold_moving_averages ──────────────────────────────────────────────────
+  - name: gold_moving_averages
+    description: >
+      7-day and 30-day Simple Moving Averages of the BTC/USDT daily close price.
+      One row per (symbol, trade_date). SMA values are NULL until sufficient
+      history exists (7 days for SMA-7, 30 days for SMA-30) — no partial window
+      approximations. Includes golden cross / death cross zone classification
+      and price momentum signals relative to each MA.
+      Primary source for Looker Studio Page 1 price chart SMA overlay.
+    columns:
+
+      - name: trade_date
+        description: Calendar date (UTC). Partition key.
+        tests:
+          - not_null
+          - unique:
+              name: unique_moving_averages_per_symbol
+              config:
+                where: "symbol = 'BTCUSDT'"
+
+      - name: symbol
+        description: Trading pair symbol.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["BTCUSDT"]
+
+      - name: close
+        description: Daily close price — last 1-minute candle close of the day.
+        tests:
+          - not_null
+
+      - name: sma_7d
+        description: >
+          7-day Simple Moving Average of close price.
+          NULL for the first 6 days of history (insufficient window).
+          Formula: AVG(close) OVER (ROWS BETWEEN 6 PRECEDING AND CURRENT ROW).
+
+      - name: sma_30d
+        description: >
+          30-day Simple Moving Average of close price.
+          NULL for the first 29 days of history.
+          Formula: AVG(close) OVER (ROWS BETWEEN 29 PRECEDING AND CURRENT ROW).
+
+      - name: sma_7d_valid
+        description: True when at least 7 days of history exist. False otherwise.
+        tests:
+          - not_null
+
+      - name: sma_30d_valid
+        description: True when at least 30 days of history exist. False otherwise.
+        tests:
+          - not_null
+
+      - name: price_vs_sma_7d_pct
+        description: >
+          Price position relative to SMA-7: (close - sma_7d) / sma_7d * 100.
+          Positive = price above SMA-7 (short-term bullish momentum).
+          Negative = price below SMA-7 (short-term bearish momentum).
+          NULL when sma_7d is not yet valid.
+
+      - name: price_vs_sma_30d_pct
+        description: >
+          Price position relative to SMA-30: (close - sma_30d) / sma_30d * 100.
+          Positive = price above SMA-30 (long-term bullish trend).
+          Negative = price below SMA-30 (long-term bearish trend).
+          NULL when sma_30d is not yet valid.
+
+      - name: trend_signal
+        description: >
+          Composite trend signal based on price position relative to both SMAs.
+          above_both: price > sma_7d AND price > sma_30d (bullish).
+          below_both: price < sma_7d AND price < sma_30d (bearish).
+          mixed: transitional / consolidation phase.
+          insufficient_history: fewer than 30 days of data available.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["above_both", "below_both", "mixed", "insufficient_history"]
+
+      - name: cross_signal
+        description: >
+          Golden cross / death cross zone classification.
+          golden_cross_zone: sma_7d > sma_30d (short-term MA above long-term MA).
+          death_cross_zone: sma_7d < sma_30d (short-term MA below long-term MA).
+          at_crossover: sma_7d = sma_30d (crossover point).
+          NULL when insufficient history for both SMAs.
+
+      - name: days_of_history
+        description: Cumulative count of trading days available for this symbol.
+        tests:
+          - not_null
+
+      - name: dbt_updated_at
+        description: Timestamp of the most recent dbt run.
+        tests:
+          - not_null

@@ -1,0 +1,104 @@
+###############################################################################
+# dbt Core project configuration for the Crypto Market Data Platform.
+#
+# Naming convention:
+#   All models are prefixed with their layer (silver_, gold_) so that
+#   BigQuery tables are unambiguous when viewed in the GCP Console or
+#   Looker Studio — no need to inspect the dataset to understand lineage.
+#
+# Materialisation defaults:
+#   Silver → incremental (only process new data on each run)
+#   Gold   → table (full refresh — analytics queries always see complete data)
+#
+# Schema routing:
+#   Silver models → silver_curated dataset
+#   Gold models   → gold_analytics dataset
+#   The generate_schema_name macro enforces this — dbt's default schema
+#   behaviour (appending target schema prefix) is overridden.
+###############################################################################
+
+name: "crypto_platform"
+version: "1.0.0"
+config-version: 2
+
+profile: "crypto_platform"
+
+# Directory layout
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+docs-paths: ["docs"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# ─── Model Configuration ──────────────────────────────────────────────────────
+models:
+  crypto_platform:
+
+    silver:
+      +schema: silver_curated
+      +tags: ["silver", "curated"]
+      +materialized: incremental
+      +incremental_strategy: merge
+      +on_schema_change: fail   # Fail loudly if source schema changes — never silently ignore
+
+      silver_deduped_trades:
+        +materialized: incremental
+        +unique_key: trade_id
+        +partition_by:
+          field: trade_date
+          data_type: date
+          granularity: day
+        +cluster_by: ["symbol"]
+        +labels:
+          layer: silver
+          pipeline: dbt
+          sprint: "3"
+
+      silver_ohlcv_validated:
+        +materialized: view       # Lightweight — no storage cost, always fresh
+        +labels:
+          layer: silver
+          pipeline: dbt
+          sprint: "3"
+
+    gold:
+      +schema: gold_analytics
+      +tags: ["gold", "analytics"]
+      +materialized: table        # Full refresh — Looker Studio needs stable targets
+      +labels:
+        layer: gold
+        pipeline: dbt
+        sprint: "3"
+
+      gold_daily_ohlcv:
+        +partition_by:
+          field: trade_date
+          data_type: date
+          granularity: day
+        +cluster_by: ["symbol"]
+
+      gold_price_stats_24h:
+        +cluster_by: ["symbol"]
+
+      gold_trade_volume_hourly:
+        +partition_by:
+          field: trade_hour
+          data_type: timestamp
+          granularity: hour
+        +cluster_by: ["symbol"]
+
+# ─── Snapshot Configuration ───────────────────────────────────────────────────
+snapshots:
+  crypto_platform:
+    +target_schema: snapshots
+    +strategy: timestamp
+    +updated_at: ingested_at
+
+# ─── Test Severity ────────────────────────────────────────────────────────────
+# Schema test failures block pipeline — data quality is non-negotiable.
+tests:
+  crypto_platform:
+    +severity: error
+    +store_failures: true         # Store failing rows in BQ for triage
+    +schema: dbt_test_failures    # Dedicated dataset for failure storage

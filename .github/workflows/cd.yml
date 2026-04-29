@@ -1,0 +1,145 @@
+###############################################################################
+# .github/workflows/cd.yml
+# Continuous Deployment Pipeline
+#
+# Triggers: push to main branch only (after PR merge).
+# Authentication: Keyless via Workload Identity Federation — no service
+#   account keys stored in GitHub Secrets.
+#
+# Required GitHub Secrets (set in repo Settings → Secrets → Actions):
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  — output of: terraform output workload_identity_provider
+#   GCP_SERVICE_ACCOUNT             — output of: terraform output cicd_service_account_email
+#
+# Required GitHub Variables (set in repo Settings → Variables → Actions):
+#   GCP_PROJECT_ID    → vg-ind-2026
+#   GCP_REGION        → us-central1
+#   AR_REPOSITORY     → crypto-platform
+#   CLOUD_RUN_SERVICE → crypto-ingestor
+###############################################################################
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/ingestor/**"
+      - ".github/workflows/cd.yml"
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AR_REPOSITORY: ${{ vars.AR_REPOSITORY }}
+  CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+
+jobs:
+
+  deploy:
+    name: Build → Push → Deploy
+    runs-on: ubuntu-latest
+
+    # Required permissions for Workload Identity Federation
+    permissions:
+      contents: read
+      id-token: write  # Required to mint the OIDC token for WIF
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── GCP Authentication via Workload Identity Federation ─────────────────
+      # No service account key JSON is stored anywhere. GitHub mints a
+      # short-lived OIDC token; WIF exchanges it for a GCP access token
+      # scoped to sa-cicd only.
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      # ── Docker ───────────────────────────────────────────────────────────────
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Define image tags
+        id: tags
+        run: |
+          AR_BASE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/ingestor"
+          SHORT_SHA="${GITHUB_SHA::8}"
+          echo "image_sha=${AR_BASE}:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_latest=${AR_BASE}:latest" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ingestor image
+        uses: docker/build-push-action@v5
+        with:
+          context: services/ingestor
+          file: services/ingestor/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.tags.outputs.image_sha }}
+            ${{ steps.tags.outputs.image_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Cloud Run Deploy ─────────────────────────────────────────────────────
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.CLOUD_RUN_SERVICE }}
+          region: ${{ env.GCP_REGION }}
+          image: ${{ steps.tags.outputs.image_sha }}
+          # Zero-downtime rolling deploy — new revision receives 100% traffic
+          # only after passing startup probes.
+          flags: "--traffic-tags=latest=100"
+
+      # ── Post-deploy Verification ─────────────────────────────────────────────
+      - name: Verify deployment health
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.CLOUD_RUN_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+
+          echo "Service URL: ${SERVICE_URL}"
+
+          # Poll /health for up to 60 seconds
+          for i in $(seq 1 12); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health")
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Health check passed (attempt ${i}) — deployment successful."
+              exit 0
+            fi
+            echo "Attempt ${i}: status=${HTTP_STATUS} — waiting 5s..."
+            sleep 5
+          done
+
+          echo "Health check failed after 60s — deployment may have issues."
+          exit 1
+
+      # ── Deployment Summary ───────────────────────────────────────────────────
+      - name: Write deployment summary
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.CLOUD_RUN_SERVICE }} \
+            --region=${{ env.GCP_REGION }} \
+            --format='value(status.url)')
+
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Deployment Summary
+
+          | Field | Value |
+          |---|---|
+          | Service | \`${{ env.CLOUD_RUN_SERVICE }}\` |
+          | Region | \`${{ env.GCP_REGION }}\` |
+          | Image Tag | \`${{ steps.tags.outputs.short_sha }}\` |
+          | Commit | \`${GITHUB_SHA}\` |
+          | Service URL | ${SERVICE_URL} |
+          | Health | ${SERVICE_URL}/health |
+          EOF

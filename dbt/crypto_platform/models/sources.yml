@@ -1,0 +1,146 @@
+###############################################################################
+# dbt source declarations for all upstream BigQuery tables.
+#
+# Sources represent data written by external systems (Beam pipeline, ingestor)
+# that dbt reads but does not own. Declaring them here enables:
+#   - Source freshness checks (dbt source freshness)
+#   - Lineage graph in dbt docs
+#   - Consistent ref() pattern across all models
+#
+# Freshness thresholds:
+#   warn_after: 2 hours  — alert if data is stale but pipeline may recover
+#   error_after: 6 hours — hard failure — SLA breach, escalate
+###############################################################################
+
+version: 2
+
+sources:
+
+  # ─── Bronze Layer ───────────────────────────────────────────────────────────
+  - name: bronze_raw
+    description: >
+      Raw ingestion layer. Contains unprocessed trade events written directly
+      by the Binance WebSocket ingestor and Beam pipeline. Schema-on-write.
+      Data in this layer is immutable — never updated, only appended.
+    database: vg-ind-2026
+    schema: bronze_raw
+    tags: ["bronze", "source"]
+
+    freshness:
+      warn_after: { count: 2, period: hour }
+      error_after: { count: 6, period: hour }
+    loaded_at_field: ingested_at
+
+    tables:
+      - name: raw_trades
+        description: >
+          Individual BTC/USDT trade events from the Binance public WebSocket
+          stream. One row per trade. Written by the Beam pipeline.
+          Partitioned by ingestion date. May contain duplicate trade_ids
+          due to Beam ACCUMULATING window re-firing — deduplicated in Silver.
+        columns:
+          - name: trade_id
+            description: Unique trade identifier assigned by Binance exchange.
+            tests:
+              - not_null
+          - name: symbol
+            description: Trading pair. Always BTCUSDT for this stream.
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["BTCUSDT"]
+          - name: price
+            description: Trade execution price in USDT. Stored as NUMERIC.
+            tests:
+              - not_null
+          - name: quantity
+            description: Trade quantity in BTC. Stored as NUMERIC.
+            tests:
+              - not_null
+          - name: trade_time_ms
+            description: Trade execution timestamp in milliseconds (Unix epoch).
+            tests:
+              - not_null
+          - name: ingested_at
+            description: Timestamp when the Beam pipeline wrote this row to BigQuery.
+            tests:
+              - not_null
+
+      - name: pipeline_dead_letter
+        description: >
+          Beam pipeline-level parse and validation failures.
+          Used for operational triage and pipeline health monitoring.
+          Not used in any downstream dbt model.
+        columns:
+          - name: raw_message
+            description: Original raw message string (truncated to 1024 chars).
+          - name: pipeline_error
+            description: Error category from the Beam pipeline.
+          - name: logged_at
+            description: Timestamp when the failure was logged.
+
+  # ─── Silver Layer (Beam-written) ────────────────────────────────────────────
+  - name: silver_beam
+    description: >
+      Silver layer tables written directly by the Apache Beam OHLCV pipeline.
+      These are the primary source for Gold layer dbt models.
+      dbt reads from these tables but does not own their write lifecycle.
+    database: vg-ind-2026
+    schema: silver_curated
+    tags: ["silver", "source", "beam"]
+
+    freshness:
+      warn_after: { count: 2, period: hour }
+      error_after: { count: 6, period: hour }
+    loaded_at_field: ingested_at
+
+    tables:
+      - name: ohlcv_1min
+        description: >
+          1-minute OHLCV candles for BTC/USDT aggregated by the Beam pipeline.
+          One row per (symbol, window_start). Partitioned by window_start DAY.
+          May contain duplicate rows for the same window due to ACCUMULATING
+          mode re-firing — validated and deduplicated in silver_ohlcv_validated.
+        columns:
+          - name: window_start
+            description: Fixed window open time (UTC). Partition key.
+            tests:
+              - not_null
+          - name: window_end
+            description: Fixed window close time (UTC). Always window_start + 60s.
+            tests:
+              - not_null
+          - name: symbol
+            description: Trading pair symbol.
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ["BTCUSDT"]
+          - name: open
+            description: Price of the first trade in the window.
+            tests:
+              - not_null
+          - name: high
+            description: Maximum trade price within the window.
+            tests:
+              - not_null
+          - name: low
+            description: Minimum trade price within the window.
+            tests:
+              - not_null
+          - name: close
+            description: Price of the last trade in the window.
+            tests:
+              - not_null
+          - name: volume
+            description: Sum of (price × quantity) for all trades in the window.
+            tests:
+              - not_null
+          - name: trade_count
+            description: Number of individual trades aggregated into this candle.
+            tests:
+              - not_null
+          - name: ingested_at
+            description: Timestamp when the Beam pipeline wrote this row to BigQuery.
+            tests:
+              - not_null

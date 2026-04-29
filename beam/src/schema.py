@@ -1,0 +1,108 @@
+"""
+Data contracts for the Beam OHLCV pipeline.
+
+Defines:
+  TradeRecord    — Parsed, validated trade event from Pub/Sub message.
+  OHLCVRecord    — Aggregated 1-minute OHLCV candle written to BigQuery Silver.
+  BQ_OHLCV_SCHEMA — BigQuery table schema for silver_curated.ohlcv_1min.
+
+Design note:
+  We use plain dataclasses (not Pydantic) for Beam element types.
+  Beam serialises elements between transforms using pickle. Pydantic models
+  carry heavy metaclass machinery that can cause issues with Beam's
+  distributed serialisation. Dataclasses are lightweight and pickle cleanly.
+
+  Pydantic is used only at the boundary (ParseAndValidate transform) to
+  validate the raw Pub/Sub JSON — after validation, data is converted to
+  TradeRecord dataclass for all downstream Beam processing.
+"""
+
+from dataclasses import dataclass, field
+from decimal import Decimal
+
+
+# ─── Beam Element Types ───────────────────────────────────────────────────────
+
+@dataclass
+class TradeRecord:
+    """
+    A single validated BTC/USDT trade event.
+    This is the element type flowing through the Beam pipeline after
+    ParseAndValidate. All downstream PTransforms operate on TradeRecord.
+    """
+    trade_id: int
+    symbol: str
+    price: Decimal
+    quantity: Decimal
+    trade_time_ms: int        # Trade execution time — used as Beam event timestamp
+    event_time_ms: int        # Binance event publish time
+
+
+@dataclass
+class OHLCVAccumulator:
+    """
+    Mutable accumulator used by OHLCVCombineFn during the CombinePerKey step.
+    Holds running state for one symbol within one fixed window.
+
+    Fields are ordered to match trade arrival — open is set on first trade,
+    close is updated on every subsequent trade (last-write-wins within window).
+    """
+    open: Decimal = Decimal("0")
+    high: Decimal = Decimal("0")
+    low: Decimal = Decimal("0")
+    close: Decimal = Decimal("0")
+    volume: Decimal = Decimal("0")      # Σ (price × quantity)
+    trade_count: int = 0
+    first_trade_time_ms: int = 0        # Used to determine open price
+    last_trade_time_ms: int = 0         # Used to determine close price
+    is_empty: bool = True               # Guards first-trade initialisation
+
+
+@dataclass
+class OHLCVRecord:
+    """
+    A completed 1-minute OHLCV candle written to BigQuery Silver layer.
+    One record per (symbol, window) pair.
+    """
+    window_start: str           # ISO 8601 UTC — BigQuery TIMESTAMP compatible
+    window_end: str             # ISO 8601 UTC
+    symbol: str
+    open: str                   # Decimal serialised as string — converted to
+    high: str                   # NUMERIC by BigQuery schema on insert.
+    low: str                    # String avoids float precision loss in transit.
+    close: str
+    volume: str
+    trade_count: int
+    ingested_at: str            # ISO 8601 UTC — pipeline write timestamp
+
+
+# ─── BigQuery Schema ──────────────────────────────────────────────────────────
+
+BQ_OHLCV_SCHEMA = {
+    "fields": [
+        {"name": "window_start",  "type": "TIMESTAMP", "mode": "REQUIRED"},
+        {"name": "window_end",    "type": "TIMESTAMP", "mode": "REQUIRED"},
+        {"name": "symbol",        "type": "STRING",    "mode": "REQUIRED"},
+        {"name": "open",          "type": "NUMERIC",   "mode": "REQUIRED"},
+        {"name": "high",          "type": "NUMERIC",   "mode": "REQUIRED"},
+        {"name": "low",           "type": "NUMERIC",   "mode": "REQUIRED"},
+        {"name": "close",         "type": "NUMERIC",   "mode": "REQUIRED"},
+        {"name": "volume",        "type": "NUMERIC",   "mode": "REQUIRED"},
+        {"name": "trade_count",   "type": "INTEGER",   "mode": "REQUIRED"},
+        {"name": "ingested_at",   "type": "TIMESTAMP", "mode": "REQUIRED"},
+    ]
+}
+
+# BigQuery schema string format for WriteToBigQuery (alternative format)
+BQ_OHLCV_SCHEMA_STR = (
+    "window_start:TIMESTAMP,"
+    "window_end:TIMESTAMP,"
+    "symbol:STRING,"
+    "open:NUMERIC,"
+    "high:NUMERIC,"
+    "low:NUMERIC,"
+    "close:NUMERIC,"
+    "volume:NUMERIC,"
+    "trade_count:INTEGER,"
+    "ingested_at:TIMESTAMP"
+)

@@ -1,0 +1,55 @@
+###############################################################################
+# dbt connection profiles for BigQuery.
+#
+# SECURITY: This file is committed to version control because it contains
+# NO credentials — authentication is handled by ADC (Application Default
+# Credentials) locally and by sa-dbt Workload Identity in CI/CD.
+#
+# Local usage:
+#   gcloud auth application-default login
+#   dbt run --profiles-dir .
+#
+# CI/CD usage:
+#   GitHub Actions authenticates via WIF → sa-dbt service account.
+#   The google-github-actions/auth step sets GOOGLE_APPLICATION_CREDENTIALS.
+#
+# Profile selection:
+#   DBT_TARGET env var controls dev vs prod target.
+#   Default: dev (lower query cost — uses dataset partitions aggressively).
+###############################################################################
+
+crypto_platform:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+
+  outputs:
+
+    # ── Development target ──────────────────────────────────────────────────
+    # Used for local runs and PR validation.
+    # Writes to the same datasets as production at this scale.
+    # In a multi-environment enterprise setup, dev would use separate datasets
+    # (e.g., silver_curated_dev, gold_analytics_dev).
+    dev:
+      type: bigquery
+      method: oauth                           # Uses gcloud ADC locally
+      project: "{{ env_var('GCP_PROJECT_ID', 'vg-ind-2026') }}"
+      dataset: dbt_dev                        # Default dataset (overridden per model by schema config)
+      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
+      threads: 4
+      timeout_seconds: 300
+      priority: interactive
+      retries: 2
+
+    # ── Production target ───────────────────────────────────────────────────
+    # Used by Airflow (Sprint 4) and CD pipeline on merge to main.
+    # Authenticates via sa-dbt service account (Workload Identity).
+    prod:
+      type: bigquery
+      method: service-account                 # Uses sa-dbt SA key injected by WIF
+      project: "{{ env_var('GCP_PROJECT_ID', 'vg-ind-2026') }}"
+      dataset: dbt_prod
+      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
+      threads: 8
+      timeout_seconds: 600
+      priority: batch                         # Cost-optimised for scheduled runs
+      retries: 3

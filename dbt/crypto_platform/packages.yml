@@ -1,0 +1,14 @@
+###############################################################################
+# dbt package dependencies.
+#
+# dbt-utils: Industry-standard utility macros.
+#   Used for: surrogate_key(), date_spine(), pivot(), safe_divide()
+#   Source: https://hub.getdbt.com/dbt-labs/dbt_utils/
+#
+# After adding or changing packages, run:
+#   dbt deps
+###############################################################################
+
+packages:
+  - package: dbt-labs/dbt_utils
+    version: [">=1.2.0", "<2.0.0"]

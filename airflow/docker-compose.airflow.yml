@@ -1,0 +1,159 @@
+###############################################################################
+# Airflow orchestration stack for local development on Apple Silicon / OrbStack.
+#
+# Services:
+#   postgres          — Airflow metadata database (PostgreSQL 15)
+#   airflow-init      — One-shot: DB migration + admin user creation
+#   airflow-webserver — Airflow UI (http://localhost:8081)
+#   airflow-scheduler — DAG scheduling and task execution
+#
+# Memory budget (fits within 8GB allocation alongside platform stack):
+#   postgres:           ~150MB
+#   airflow-webserver:  ~400MB
+#   airflow-scheduler:  ~400MB
+#   airflow-init:       ~200MB (exits after init)
+#   Total:              ~950MB
+#
+# Usage:
+#   make airflow-up    → Start the full Airflow stack
+#   make airflow-down  → Stop and remove containers
+#   make airflow-logs  → Tail scheduler + webserver logs
+#
+# Airflow UI: http://localhost:8081
+# Default credentials: admin / admin (change via .env.airflow)
+#
+# DAG hot-reload: DAGs and plugins are mounted as volumes — changes to
+# .py files are picked up by the scheduler within ~30 seconds without
+# container restart.
+###############################################################################
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+    platforms:
+      - linux/amd64
+  platform: linux/amd64
+  env_file:
+    - .env.airflow
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+    AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+    AIRFLOW__SCHEDULER__CATCHUP_BY_DEFAULT: "false"
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-vg-ind-2026}
+    GCP_REGION: ${GCP_REGION:-us-central1}
+    DBT_TARGET: ${DBT_TARGET:-prod}
+    PYTHONPATH: /opt/airflow/dags:/opt/airflow/plugins
+  volumes:
+    # Hot-reload: mount DAGs and plugins as volumes for development
+    - ./dags:/opt/airflow/dags:ro
+    - ./plugins:/opt/airflow/plugins:ro
+    # dbt project — required by DbtRunOperator at runtime
+    - ../dbt:/opt/airflow/dbt:ro
+    # GCP service account key for BigQuery access
+    # Mount your sa-airflow key here (generated after terraform apply)
+    - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/opt/airflow/keys/sa-airflow-key.json:ro
+    # Airflow logs persistent across restarts
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - airflow-net
+
+
+services:
+
+  # ─── PostgreSQL Metadata Database ──────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    platform: linux/amd64
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - airflow-net
+    restart: unless-stopped
+
+  # ─── Airflow Init (one-shot) ───────────────────────────────────────────────
+  # Runs DB migrations and creates the admin user on first start.
+  # Exits after completion — subsequent starts skip this service.
+  airflow-init:
+    <<: *airflow-common
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create
+          --username ${_AIRFLOW_WWW_USER_USERNAME:-admin}
+          --password ${_AIRFLOW_WWW_USER_PASSWORD:-admin}
+          --firstname Admin
+          --lastname User
+          --role Admin
+          --email admin@crypto-platform.internal &&
+        airflow variables set dead_letter_max_per_hour 100 &&
+        airflow variables set silver_min_rows_per_hour 50 &&
+        echo 'Airflow initialised successfully.'
+      "
+    restart: "no"
+
+  # ─── Airflow Webserver ────────────────────────────────────────────────────
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8081:8080"     # Mapped to 8081 to avoid conflict with ingestor on 8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ─── Airflow Scheduler ────────────────────────────────────────────────────
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--limit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+
+volumes:
+  postgres-data:
+    driver: local
+  airflow-logs:
+    driver: local
+
+
+networks:
+  airflow-net:
+    driver: bridge
