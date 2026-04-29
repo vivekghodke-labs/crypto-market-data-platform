@@ -2,9 +2,6 @@
 
 > **Enterprise Near Real-Time Market Data Platform** — A production-grade, cloud-native data engineering project demonstrating end-to-end streaming architecture on Google Cloud Platform.
 
-[![CI](https://github.com/vivekghodke-labs/crypto-market-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/vivekghodke-labs/crypto-market-data-platform/actions/workflows/ci.yml)
-[![CD](https://github.com/vivekghodke-labs/crypto-market-data-platform/actions/workflows/cd.yml/badge.svg)](https://github.com/vivekghodke-labs/crypto-market-data-platform/actions/workflows/cd.yml)
-
 ---
 
 ## Overview
@@ -91,10 +88,10 @@ graph TD
 ## Sprint Progress
 
 - [x] **Sprint 1** — Layer 1: Event Ingestion (Cloud Run + Pub/Sub + Terraform)
-- [ ] **Sprint 2** — Layer 2: Stream Processing (Apache Beam OHLCV pipeline)
-- [ ] **Sprint 3** — Layer 3: Medallion Transformation (dbt Bronze→Silver→Gold)
-- [ ] **Sprint 4** — Layer 4: Orchestration (Airflow DAGs on OrbStack)
-- [ ] **Sprint 5** — Layer 9: Visualisation (Looker Studio dashboard)
+- [x] **Sprint 2** — Layer 2: Stream Processing (Apache Beam OHLCV pipeline)
+- [x] **Sprint 3** — Layer 3: Medallion Transformation (dbt Bronze→Silver→Gold)
+- [x] **Sprint 4** — Layer 4: Orchestration (Airflow DAGs on OrbStack)
+- [x] **Sprint 5** — Layer 9: Visualisation (Looker Studio dashboard)
 
 ---
 
@@ -145,15 +142,7 @@ crypto-market-data-platform/
 - `gcloud` CLI installed (`brew install google-cloud-sdk`)
 - Python 3.12+ with pip
 
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/vivekghodke-labs/crypto-market-data-platform.git
-cd crypto-market-data-platform
-cp .env.example .env
-```
-
-### 2. Start the local stack
+### 1. Start the local stack
 
 ```bash
 make run
