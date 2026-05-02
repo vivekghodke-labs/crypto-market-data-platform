@@ -7,13 +7,13 @@
 #   - apache-airflow-providers-http (HttpSensor for ingestor health check)
 #
 # Build target: linux/amd64 (required for GCP compatibility)
-# Base: apache/airflow:2.10.3-python3.12
+# Base: apache/airflow:2.10.3-python3.13
 #
 # Non-root: Airflow official image already runs as user 'airflow' (UID 50000).
 # We inherit this — no USER directive needed.
 ###############################################################################
 
-FROM apache/airflow:2.10.3-python3.12
+FROM apache/airflow:2.10.3-python3.13
 
 # Switch to root only for system dependency installation
 USER root

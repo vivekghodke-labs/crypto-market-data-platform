@@ -2,7 +2,7 @@
 # Installs dependencies into a clean virtual environment.
 # Isolating this stage means the final image contains no build tools,
 # pip cache, or unnecessary system packages.
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 
 # Prevents Python from writing .pyc files and enables unbuffered stdout/stderr.
 # Unbuffered output is critical for Cloud Run structured logging — buffered
@@ -22,7 +22,7 @@ RUN pip install --upgrade pip && \
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # Minimal runtime image — no build tools, no pip, no shell history.
-FROM python:3.12-slim AS runtime
+FROM python:3.13-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
