@@ -57,7 +57,7 @@ class ParseAndValidate(beam.PTransform):
       - trade_id and trade_time_ms must be integers > 0
     """
 
-    def expand(self, pcoll: beam.PCollection) -> pvalue.DoOutputsTuple:
+    def expand(self, pcoll):
         return pcoll | "Parse" >> beam.ParDo(
             _ParseAndValidateDoFn()
         ).with_outputs(DEAD_LETTER_TAG, main="valid")

@@ -51,5 +51,7 @@ class ReadFromKafka(beam.PTransform):
             )
             # OfficialBeamKafkaReader outputs tuples of (key, value).
             # Your original code yielded raw bytes. This Map extracts just the value bytes.
-            | "Extract Raw Bytes" >> beam.Map(lambda record: record[1].with_output_types(bytes))
+            | "Extract Value" >> beam.Map(lambda record: record[1])
+            | "Filter None" >> beam.Filter(lambda x: x is not None)
+            | "Cast Bytes" >> beam.Map(lambda x: x).with_output_types(bytes)
         )
