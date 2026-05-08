@@ -169,3 +169,16 @@ dbt-run-moving-averages: ## Run gold_moving_averages model only
 
 dbt-test-moving-averages: ## Run tests for gold_moving_averages model
 	cd $(DBT_DIR) && dbt test --select gold_moving_averages --profiles-dir . --target prod
+
+# ─── Local Stack (Redpanda Cloud + DuckDB) ────────────────────────────────────
+run-local: ## Start ingestor + postgres (no emulators)
+	cp .env.local.example .env.local 2>/dev/null || true
+	docker compose up --build
+
+beam-run-local: ## Run Beam pipeline locally (Kafka → DuckDB)
+	cd beam && \
+		export $(cat ../.env.local | xargs) && \
+		python -m src.pipeline
+
+duckdb-shell: ## Open DuckDB CLI
+	duckdb /data/duckdb/crypto_platform.db

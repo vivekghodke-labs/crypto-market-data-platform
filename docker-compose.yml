@@ -21,141 +21,70 @@
 
 services:
 
-  # ─── Pub/Sub Emulator ───────────────────────────────────────────────────────
-  pubsub-emulator:
-    image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
-    platform: linux/amd64
-    command: >
-      gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=vg-ind-2026
-    ports:
-      - "8085:8085"
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8085" ]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    networks:
-      - platform-net
-
-  # ─── Pub/Sub Init ───────────────────────────────────────────────────────────
-  # Creates the required topics and subscriptions on the emulator.
-  # Runs once and exits. Uses depends_on with service_healthy to wait for
-  # the emulator to be ready before issuing gcloud commands.
-  pubsub-init:
-    image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+  # ─── PostgreSQL (Airflow Metadata) ───────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
     platform: linux/amd64
     environment:
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-    entrypoint: [ "/bin/bash", "-c" ]
-    command:
-      - |
-        set -e
-        echo "Waiting for Pub/Sub emulator..."
-        until curl -sf http://pubsub-emulator:8085; do sleep 1; done
-        echo "Emulator ready. Creating topics and subscriptions..."
-
-        gcloud config set project vg-ind-2026
-
-        # Create raw trades topic
-        gcloud pubsub topics create btc-raw-trades \
-          --project=vg-ind-2026 \
-          --quiet 2>/dev/null || echo "btc-raw-trades already exists"
-
-        # Create dead-letter topic
-        gcloud pubsub topics create btc-dead-letter \
-          --project=vg-ind-2026 \
-          --quiet 2>/dev/null || echo "btc-dead-letter already exists"
-
-        # Create Beam pull subscription on raw-trades
-        gcloud pubsub subscriptions create btc-raw-trades-beam-sub \
-          --topic=btc-raw-trades \
-          --project=vg-ind-2026 \
-          --quiet 2>/dev/null || echo "btc-raw-trades-beam-sub already exists"
-
-        # Create triage pull subscription on dead-letter
-        gcloud pubsub subscriptions create btc-dead-letter-triage-sub \
-          --topic=btc-dead-letter \
-          --project=vg-ind-2026 \
-          --quiet 2>/dev/null || echo "btc-dead-letter-triage-sub already exists"
-
-        echo "Pub/Sub emulator bootstrapped successfully."
-    depends_on:
-      pubsub-emulator:
-        condition: service_healthy
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - platform-net
+    restart: unless-stopped
+
 
   # ─── Ingestor Service ───────────────────────────────────────────────────────
+  # Points to Redpanda Cloud instead of a local emulator.
   ingestor:
     build:
       context: ./services/ingestor
       dockerfile: Dockerfile
-      platforms:
+      platforms: 
         - linux/amd64
     platform: linux/amd64
+    env_file:
+      - .env.local
     environment:
-      # Point at local Pub/Sub emulator — overrides any GCP credentials
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-      GCP_PROJECT_ID: vg-ind-2026
-      PUBSUB_TOPIC_RAW_TRADES: btc-raw-trades
-      PUBSUB_TOPIC_DEAD_LETTER: btc-dead-letter
-      BINANCE_WS_URL: wss://stream.binance.com:9443/ws/btcusdt@trade
-      ASSET_SYMBOL: BTCUSDT
-      LOG_LEVEL: INFO
+      KAFKA_SECURITY_PROTOCOL: SASL_SSL
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-256
+      KAFKA_TOPIC_RAW_TRADES: btc-raw-trades
+      KAFKA_TOPIC_DEAD_LETTER: btc-dead-letter
+
+      # Binance
+      BINANCE_WS_URL: ${BINANCE_WS_URL:-wss://stream.binance.com:9443/ws/btcusdt@trade}
+
+      # App config
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PORT: "8080"
     ports:
       - "8080:8080"
+    volumes:
+      # DuckDB storage (shared with Beam)
+      - duckdb-data:/data/duckdb
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
-    depends_on:
-      pubsub-emulator:
-        condition: service_healthy
-      pubsub-init:
-        condition: service_completed_successfully
     networks:
       - platform-net
     restart: on-failure:3
+
+volumes:
+  postgres-data:
+    driver: local
+  duckdb-data:
+    driver: local
 
 networks:
   platform-net:
     driver: bridge
-
-  # ─── Beam OHLCV Pipeline ──────────────────────────────────────────────────
-  # Runs the Apache Beam DirectRunner pipeline locally.
-  # Reads from the Pub/Sub emulator, aggregates OHLCV windows.
-  # BigQuery writes are skipped locally (BEAM_DRY_RUN=true).
-  #
-  # Start explicitly with the beam profile:
-  # docker compose --profile beam up beam
-  beam:
-    build:
-      context: ./beam
-      dockerfile: Dockerfile
-      platforms:
-        - linux/amd64
-    platform: linux/amd64
-    environment:
-      PUBSUB_EMULATOR_HOST: pubsub-emulator:8085
-      GCP_PROJECT_ID: vg-ind-2026
-      GCP_REGION: us-central1
-      BEAM_RUNNER: direct
-      PUBSUB_SUBSCRIPTION: btc-raw-trades-beam-sub
-      BQ_SILVER_DATASET: silver_curated
-      BQ_SILVER_TABLE: ohlcv_1min
-      BEAM_DRY_RUN: "true"
-      LOG_LEVEL: INFO
-    depends_on:
-      pubsub-emulator:
-        condition: service_healthy
-      pubsub-init:
-        condition: service_completed_successfully
-    networks:
-      - platform-net
-    restart: on-failure:3
-    profiles:
-      - beam

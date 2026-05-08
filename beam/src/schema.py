@@ -106,3 +106,38 @@ BQ_OHLCV_SCHEMA_STR = (
     "trade_count:INTEGER,"
     "ingested_at:TIMESTAMP"
 )
+
+# ─── DuckDB Schema ────────────────────────────────────────────────────────────
+
+DUCKDB_BRONZE_SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS bronze;
+
+CREATE TABLE IF NOT EXISTS bronze.raw_trades (
+    event_type VARCHAR NOT NULL,
+    event_time_ms BIGINT NOT NULL,
+    symbol VARCHAR NOT NULL,
+    trade_id BIGINT NOT NULL,
+    price DECIMAL(18, 8) NOT NULL,
+    quantity DECIMAL(18, 8) NOT NULL,
+    trade_time_ms BIGINT NOT NULL,
+    is_market_maker BOOLEAN NOT NULL,
+    ingested_at TIMESTAMP NOT NULL
+);
+"""
+
+DUCKDB_SILVER_SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS silver;
+
+CREATE TABLE IF NOT EXISTS silver.ohlcv_1min (
+    window_start TIMESTAMP NOT NULL,
+    window_end TIMESTAMP NOT NULL,
+    symbol VARCHAR NOT NULL,
+    open DECIMAL(18, 8) NOT NULL,
+    high DECIMAL(18, 8) NOT NULL,
+    low DECIMAL(18, 8) NOT NULL,
+    close DECIMAL(18, 8) NOT NULL,
+    volume DECIMAL(18, 8) NOT NULL,
+    trade_count INTEGER NOT NULL,
+    ingested_at TIMESTAMP NOT NULL
+);
+"""

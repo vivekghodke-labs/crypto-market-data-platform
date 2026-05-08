@@ -1,95 +1,77 @@
 """
-Handles all Pub/Sub publish operations for the ingestor service.
+Kafka producer for Redpanda Cloud.
+Replaces google-cloud-pubsub with confluent-kafka.
 
-Design decisions:
-- PublisherClient is instantiated once and reused (thread-safe, connection pooled).
-- Valid trade events → btc-raw-trades topic.
-- Invalid/rejected messages → btc-dead-letter topic with error context.
-- publish() is async-friendly: the Pub/Sub client's publish() returns a Future;
-  we call result() with a timeout to surface errors immediately rather than
-  silently dropping failed publishes.
-- Ordering keys are not used at this stage — Dataflow handles deduplication
-  via trade_id in the Silver layer (ADR-004).
+Design:
+- Synchronous produce with delivery callbacks
+- JSON serialization (same as Pub/Sub)
+- Topic routing: valid → btc-raw-trades, rejected → btc-dead-letter
 """
 
 import json
 from decimal import Decimal
 
-from google.cloud import pubsub_v1
-from google.api_core.exceptions import GoogleAPICallError
+from confluent_kafka import Producer, KafkaError, KafkaException
 
 from .logger import get_logger
 from .schema import BinanceTradeEvent, DeadLetterEnvelope
 
 logger = get_logger(__name__)
 
-# Pub/Sub publish timeout — if a message isn't acknowledged within this
-# window, we treat it as a failure and log the error.
-_PUBLISH_TIMEOUT_SECONDS: int = 10
 
-
-class PubSubPublisher:
-    """
-    Encapsulates all Pub/Sub publish operations for the ingestor.
-    Instantiate once at application startup and inject where needed.
-    """
+class KafkaPublisher:
+    """Publishes validated trades and dead-letter messages to Redpanda Cloud."""
 
     def __init__(
         self,
-        project_id: str,
+        bootstrap_servers: str,
+        sasl_username: str,
+        sasl_password: str,
         raw_trades_topic: str,
         dead_letter_topic: str,
     ) -> None:
-        self._client = pubsub_v1.PublisherClient()
-        self._raw_trades_path = self._client.topic_path(project_id, raw_trades_topic)
-        self._dead_letter_path = self._client.topic_path(project_id, dead_letter_topic)
+        self._raw_trades_topic = raw_trades_topic
+        self._dead_letter_topic = dead_letter_topic
 
+        config = {
+            'bootstrap.servers': bootstrap_servers,
+            'security.protocol': 'SASL_SSL',
+            'sasl.mechanism': 'SCRAM-SHA-256',
+            'sasl.username': sasl_username,
+            'sasl.password': sasl_password,
+            'client.id': 'crypto-ingestor',
+            'acks': 'all',  # Wait for all replicas
+            'retries': 3,
+            'retry.backoff.ms': 1000,
+        }
+
+        self._producer = Producer(config)
         logger.info(
-            "PubSubPublisher initialised",
+            "KafkaPublisher initialized",
             extra={
-                "raw_trades_topic": self._raw_trades_path,
-                "dead_letter_topic": self._dead_letter_path,
+                "bootstrap_servers": bootstrap_servers,
+                "raw_trades_topic": raw_trades_topic,
+                "dead_letter_topic": dead_letter_topic,
             },
         )
 
     def publish_trade(self, event: BinanceTradeEvent) -> None:
-        """
-        Serialises a validated BinanceTradeEvent and publishes to the
-        raw-trades topic.
-
-        The payload is JSON with Decimal fields converted to strings
-        to preserve precision — floats are prohibited in financial data.
-
-        Args:
-            event: A validated BinanceTradeEvent instance.
-
-        Raises:
-            GoogleAPICallError: If the Pub/Sub publish call fails.
-            TimeoutError: If the publish future does not resolve within timeout.
-        """
+        """Publishes a validated trade event to btc-raw-trades topic."""
         payload = json.dumps(
             event.model_dump(by_alias=False),
-            default=_decimal_serialiser,
-        ).encode("utf-8")
+            default=_decimal_serializer,
+        )
 
         try:
-            future = self._client.publish(
-                self._raw_trades_path,
-                payload,
-                # Attributes are indexed by Pub/Sub and queryable
-                symbol=event.symbol,
-                trade_id=str(event.trade_id),
+            self._producer.produce(
+                topic=self._raw_trades_topic,
+                key=str(event.trade_id).encode('utf-8'),
+                value=payload.encode('utf-8'),
+                callback=self._delivery_callback,
             )
-            message_id = future.result(timeout=_PUBLISH_TIMEOUT_SECONDS)
-            logger.debug(
-                "Trade event published",
-                extra={
-                    "message_id": message_id,
-                    "trade_id": event.trade_id,
-                    "price": str(event.price),
-                },
-            )
-        except (GoogleAPICallError, TimeoutError) as exc:
+            self._producer.poll(0)  # Trigger delivery callbacks
+
+        except KafkaException as exc:
             logger.error(
                 "Failed to publish trade event",
                 extra={"trade_id": event.trade_id, "error": str(exc)},
@@ -98,40 +80,41 @@ class PubSubPublisher:
             raise
 
     def publish_dead_letter(self, raw_message: str, error: str) -> None:
-        """
-        Publishes a rejected message to the dead-letter topic.
-        Never raises — a failure to publish to dead-letter is logged
-        but must not crash the ingestion loop.
-
-        Args:
-            raw_message: The original raw string from the WebSocket.
-            error:       The validation or parsing error description.
-        """
+        """Publishes a rejected message to btc-dead-letter topic."""
         envelope = DeadLetterEnvelope(raw_message=raw_message, error=error)
-        payload = envelope.model_dump_json().encode("utf-8")
+        payload = envelope.model_dump_json().encode('utf-8')
 
         try:
-            future = self._client.publish(
-                self._dead_letter_path,
-                payload,
-                rejection_reason="schema_validation_failure",
+            self._producer.produce(
+                topic=self._dead_letter_topic,
+                value=payload,
+                callback=self._delivery_callback,
             )
-            future.result(timeout=_PUBLISH_TIMEOUT_SECONDS)
-            logger.warning(
-                "Message routed to dead-letter topic",
-                extra={"error": error},
-            )
+            self._producer.poll(0)
+            logger.warning("Message routed to dead-letter topic", extra={"error": error})
+
         except Exception as exc:
-            # Dead-letter publish failure must not propagate — log and continue.
             logger.error(
                 "Failed to publish to dead-letter topic",
                 extra={"error": str(exc)},
                 exc_info=True,
             )
 
+    def flush(self) -> None:
+        """Flushes pending messages (call on shutdown)."""
+        self._producer.flush()
 
-def _decimal_serialiser(obj: object) -> str:
-    """JSON serialiser for Decimal — converts to string to preserve precision."""
+    @staticmethod
+    def _delivery_callback(err, msg):
+        """Kafka delivery report callback."""
+        if err:
+            logger.error(f"Message delivery failed: {err}")
+        else:
+            logger.debug(f"Message delivered to {msg.topic()} partition {msg.partition()}")
+
+
+def _decimal_serializer(obj: object) -> str:
+    """JSON serializer for Decimal."""
     if isinstance(obj, Decimal):
         return str(obj)
-    raise TypeError(f"Object of type {type(obj)} is not JSON serialisable")
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")

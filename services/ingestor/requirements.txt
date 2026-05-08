@@ -3,4 +3,4 @@ uvicorn[standard]==0.32.1
 websockets==13.1
 pydantic==2.9.2
 pydantic-settings==2.6.1
-google-cloud-pubsub==2.37.0
+confluent-kafka==2.8.1

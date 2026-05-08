@@ -32,7 +32,7 @@ from .logger import get_logger
 from .schema import BinanceTradeEvent
 
 if TYPE_CHECKING:
-    from .publisher import PubSubPublisher
+    from .publisher import KafkaPublisher
 
 logger = get_logger(__name__)
 
@@ -51,7 +51,7 @@ class BinanceWebSocketClient:
     def __init__(
         self,
         ws_url: str,
-        publisher: "PubSubPublisher",
+        publisher: "KafkaPublisher",
     ) -> None:
         self._ws_url = ws_url
         self._publisher = publisher
