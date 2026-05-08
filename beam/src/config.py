@@ -15,7 +15,7 @@ from apache_beam.options.pipeline_options import PipelineOptions, StandardOption
 
 logger = logging.getLogger(__name__)
 
-WINDOW_SIZE_SECONDS: int = 60
+WINDOW_SIZE_SECONDS: int = 5
 ALLOWED_LATENESS_SECONDS: int = 30
 
 
@@ -64,7 +64,7 @@ def build_pipeline_options(config: PipelineConfig) -> PipelineOptions:
     options = PipelineOptions(flags=[])
     standard = options.view_as(StandardOptions)
     standard.runner = "DirectRunner"
-    standard.streaming = True
+    standard.streaming = False
 
     logger.info("Pipeline configured for DirectRunner (local)")
     return options

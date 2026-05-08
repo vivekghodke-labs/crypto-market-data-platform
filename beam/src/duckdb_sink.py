@@ -1,13 +1,3 @@
-"""
-DuckDB sink for Apache Beam — replaces WriteToBigQuery.
-
-Design:
-- WriteToDuckDB PTransform wraps custom DoFn
-- Batch writes (100 rows per INSERT)
-- Schema auto-creation on first write
-- Thread-safe connection pool (1 connection per worker)
-"""
-
 import duckdb
 from typing import Iterable
 
@@ -30,9 +20,8 @@ class DuckDBWriter(beam.DoFn):
 
     def setup(self):
         """Initialize connection (per worker)."""
+        # Open connection but REMOVE the table creation from here
         self._conn = duckdb.connect(self.db_path)
-        # Create schema + table if not exists
-        self._conn.execute(self.schema_sql)
         logger.info(f"DuckDB writer initialized | table={self.table}")
 
     def process(self, batch: Iterable[dict]):
@@ -51,6 +40,7 @@ class DuckDBWriter(beam.DoFn):
 
         # Batch insert
         self._conn.executemany(insert_sql, rows)
+        self._conn.commit()
         logger.info(f"Wrote {len(records)} records to {self.table}")
 
     def teardown(self):
@@ -68,9 +58,14 @@ class WriteToDuckDB(beam.PTransform):
         self.schema_sql = schema_sql
         self.batch_size = batch_size
 
+        # EXECUTED ON PIPELINE STARTUP: Create schema immediately
+        logger.info(f"Ensuring DuckDB schema exists for {self.table} at {self.db_path}")
+        with duckdb.connect(self.db_path) as conn:
+            conn.execute(self.schema_sql)
+
     def expand(self, pcoll):
         return (
             pcoll
-            | "Batch records" >> beam.BatchElements(min_batch_size=self.batch_size, max_batch_size=self.batch_size)
+            | "Batch records" >> beam.BatchElements(min_batch_size=1, max_batch_size=self.batch_size)
             | "Write to DuckDB" >> beam.ParDo(DuckDBWriter(self.db_path, self.table, self.schema_sql))
         )

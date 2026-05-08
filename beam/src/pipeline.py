@@ -45,6 +45,10 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
         sasl_password=config.kafka_sasl_password,
     )
 
+    raw_messages | "DebugPrintKafka" >> beam.Map(
+        lambda msg: logger.info(f"DEBUG - KAFKA MESSAGE ARRIVED: {msg[:100]}")
+    )
+
     # Parse & Validate
     parsed = raw_messages | "ParseAndValidate" >> ParseAndValidate()
     valid_trades = parsed["valid"]
@@ -60,10 +64,7 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
 
     # Fixed Window (60s)
     windowed = timestamped | "WindowIntoFixedWindows" >> beam.WindowInto(
-        FixedWindows(config.window_size_seconds),
-        trigger=AfterWatermark(early=AfterProcessingTime(30), late=AfterCount(1)),
-        accumulation_mode=AccumulationMode.ACCUMULATING,
-        allowed_lateness=Duration(seconds=config.allowed_lateness_seconds),
+        FixedWindows(config.window_size_seconds)
     )
 
     # Key by Symbol
@@ -75,11 +76,17 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
     # Format for DuckDB
     formatted = aggregated | "FormatOHLCV" >> beam.ParDo(FormatOHLCV())
 
+    # ADD THIS DEBUG LINE:
+    formatted | "DebugCandle" >> beam.Map(
+        lambda c: logger.info(f"CANDLE GENERATED: {c['window_start']} to {c['window_end']} | Vol: {c['volume']}")
+    )
+
     # Write to DuckDB Silver
     formatted | "WriteOHLCVToDuckDB" >> WriteToDuckDB(
         db_path=config.duckdb_path,
         table="silver.ohlcv_1min",
         schema_sql=DUCKDB_SILVER_SCHEMA,
+        batch_size=1
     )
 
     return pipeline

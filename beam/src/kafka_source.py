@@ -47,7 +47,8 @@ class ReadFromKafka(beam.PTransform):
             | "Official Kafka Read" >> OfficialBeamKafkaReader(
                 consumer_config=consumer_config,
                 topics=[self.topic],
-                with_metadata=False
+                with_metadata=False,
+                max_num_records=2000
             )
             # OfficialBeamKafkaReader outputs tuples of (key, value).
             # Your original code yielded raw bytes. This Map extracts just the value bytes.

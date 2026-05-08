@@ -72,41 +72,41 @@ class _ParseAndValidateDoFn(beam.DoFn):
             raw = element.decode("utf-8") if isinstance(element, bytes) else element
             payload: dict = json.loads(raw)
 
-            # Field presence check
-            required_fields = {"e", "E", "s", "t", "p", "q", "T", "m"}
+            # Look for the clean Pydantic keys sent by the ingestor
+            required_fields = {"event_type", "event_time_ms", "symbol", "trade_id", "price", "quantity", "trade_time_ms"}
             missing = required_fields - payload.keys()
             if missing:
                 raise ValueError(f"Missing required fields: {missing}")
 
             # Type and value validation
-            if payload["e"] != "trade":
-                raise ValueError(f"event_type must be 'trade', got '{payload['e']}'")
-            if payload["s"] != "BTCUSDT":
-                raise ValueError(f"symbol must be 'BTCUSDT', got '{payload['s']}'")
+            if payload["event_type"] != "trade":
+                raise ValueError(f"event_type must be 'trade', got '{payload['event_type']}'")
+            if payload["symbol"] != "BTCUSDT":
+                raise ValueError(f"symbol must be 'BTCUSDT', got '{payload['symbol']}'")
 
-            price = Decimal(str(payload["p"]))
+            price = Decimal(str(payload["price"]))
             if price <= 0:
                 raise ValueError(f"price must be > 0, got {price}")
 
-            quantity = Decimal(str(payload["q"]))
+            quantity = Decimal(str(payload["quantity"]))
             if quantity <= 0:
                 raise ValueError(f"quantity must be > 0, got {quantity}")
 
-            trade_id = int(payload["t"])
+            trade_id = int(payload["trade_id"])
             if trade_id <= 0:
                 raise ValueError(f"trade_id must be > 0, got {trade_id}")
 
-            trade_time_ms = int(payload["T"])
+            trade_time_ms = int(payload["trade_time_ms"])
             if trade_time_ms <= 0:
                 raise ValueError(f"trade_time_ms must be > 0, got {trade_time_ms}")
 
             yield TradeRecord(
                 trade_id=trade_id,
-                symbol=str(payload["s"]),
+                symbol=str(payload["symbol"]),
                 price=price,
                 quantity=quantity,
                 trade_time_ms=trade_time_ms,
-                event_time_ms=int(payload["E"]),
+                event_time_ms=int(payload["event_time_ms"]),
             )
 
         except (json.JSONDecodeError, ValueError, KeyError, InvalidOperation) as exc:
@@ -283,8 +283,8 @@ class FormatOHLCV(beam.DoFn):
             logger.debug("Empty window for symbol=%s — skipping", symbol)
             return
 
-        window_start = _ms_to_iso(int(window.start * 1000))
-        window_end = _ms_to_iso(int(window.end * 1000))
+        window_start = _ms_to_iso(int(float(window.start) * 1000))
+        window_end = _ms_to_iso(int(float(window.end) * 1000))
         ingested_at = datetime.now(timezone.utc).isoformat()
 
         yield {

@@ -4,7 +4,7 @@ Uses Python's built-in logging module with a custom JSON formatter.
 Every log record is emitted as a single-line JSON object — compatible
 with GCP Cloud Logging's structured log format.
 """
-
+import os
 import json
 import logging
 import sys
@@ -59,14 +59,14 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_entry, default=str)
 
 
-def get_logger(name: str, level: str = "INFO") -> logging.Logger:
+def get_logger(name: str, level: str = None) -> logging.Logger:
     """
     Returns a named logger configured with the JSON formatter.
     Safe to call multiple times — idempotent.
 
     Args:
         name:  Logger name, typically __name__ of the calling module.
-        level: Log level string. Defaults to INFO.
+        level: Log level string. Defaults to LOG_LEVEL env var or INFO.
 
     Returns:
         Configured logging.Logger instance.
@@ -76,6 +76,10 @@ def get_logger(name: str, level: str = "INFO") -> logging.Logger:
     # Avoid adding duplicate handlers on repeated calls
     if logger.handlers:
         return logger
+
+    # Dynamically grab the log level from the environment
+    if level is None:
+        level = os.getenv("LOG_LEVEL", "INFO")
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
