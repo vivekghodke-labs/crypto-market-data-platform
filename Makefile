@@ -182,3 +182,21 @@ beam-run-local: ## Run Beam pipeline locally (Kafka → DuckDB)
 
 duckdb-shell: ## Open DuckDB CLI
 	duckdb /data/duckdb/crypto_platform.db
+
+# ─── MotherDuck ───────────────────────────────────────────────────────────────
+motherduck-init: ## Initialize MotherDuck schemas (run once)
+	duckdb "md:crypto_platform?motherduck_token=${MOTHERDUCK_TOKEN}" < dbt/crypto_platform/models/motherduck/init_schemas.sql
+	@echo "✅ MotherDuck schemas initialized"
+
+motherduck-validate: ## Validate MotherDuck connection and schemas
+	python dbt/crypto_platform/scripts/validate_motherduck.py
+
+# ─── dbt (MotherDuck) ─────────────────────────────────────────────────────────
+dbt-deps-motherduck: ## Install dbt-duckdb adapter
+	cd $(DBT_DIR) && pip install -r dbt/crypto_platform/requirements.txt
+
+dbt-run-motherduck: ## Run dbt models against MotherDuck
+	cd $(DBT_DIR) && DBT_TARGET=prod dbt run --profiles-dir . --target prod
+
+dbt-test-motherduck: ## Run dbt tests against MotherDuck
+	cd $(DBT_DIR) && DBT_TARGET=prod dbt test --profiles-dir . --target prod

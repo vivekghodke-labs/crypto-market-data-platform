@@ -44,6 +44,15 @@ class PipelineConfig:
         # DuckDB
         self.duckdb_path: str = _get_env("DUCKDB_PATH", "/data/duckdb/crypto_platform.db")
 
+        # If MOTHERDUCK_TOKEN is set, force MotherDuck path
+        motherduck_token = os.getenv("MOTHERDUCK_TOKEN")
+        if motherduck_token:
+            self.duckdb_path = f"md:crypto_platform?motherduck_token={motherduck_token}"
+            logger.info("Using MotherDuck connection")
+        else:
+            self.duckdb_path = duckdb_path_raw
+            logger.info(f"Using local DuckDB: {self.duckdb_path}")
+
         # Window config
         self.window_size_seconds: int = WINDOW_SIZE_SECONDS
         self.allowed_lateness_seconds: int = ALLOWED_LATENESS_SECONDS

@@ -23,33 +23,20 @@ crypto_platform:
 
   outputs:
 
-    # ── Development target ──────────────────────────────────────────────────
-    # Used for local runs and PR validation.
-    # Writes to the same datasets as production at this scale.
-    # In a multi-environment enterprise setup, dev would use separate datasets
-    # (e.g., silver_curated_dev, gold_analytics_dev).
+    # Local development — OrbStack DuckDB
     dev:
-      type: bigquery
-      method: oauth                           # Uses gcloud ADC locally
-      project: "{{ env_var('GCP_PROJECT_ID', 'vg-ind-2026') }}"
-      dataset: dbt_dev                        # Default dataset (overridden per model by schema config)
-      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
+      type: duckdb
+      path: /data/duckdb/crypto_platform.db
+      schema: dbt_dev
       threads: 4
-      timeout_seconds: 300
-      priority: interactive
-      retries: 2
 
-    # ── Production target ───────────────────────────────────────────────────
-    # Used by Airflow (Sprint 4) and CD pipeline on merge to main.
-    # Authenticates via sa-dbt service account (Workload Identity).
+    # Production — MotherDuck Cloud
     prod:
-      type: bigquery
-      method: service-account                 # Uses sa-dbt SA key injected by WIF
-      project: "{{ env_var('GCP_PROJECT_ID', 'vg-ind-2026') }}"
-      dataset: dbt_prod
-      location: "{{ env_var('GCP_REGION', 'us-central1') }}"
-      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
+      type: duckdb
+      path: "md:crypto_platform?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
+      schema: gold_analytics
       threads: 8
-      timeout_seconds: 600
-      priority: batch                         # Cost-optimised for scheduled runs
-      retries: 3
+      settings:
+        # MotherDuck performance optimizations
+        memory_limit: '2GB'
+        threads: 8

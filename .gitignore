@@ -54,9 +54,10 @@ override.tf.json
 .DS_Store
 
 # ─── dbt ──────────────────────────────────────────────────────────────────────
-dbt/target/
-dbt/dbt_packages/
-dbt/logs/
+dbt/crypto_platform/target/
+dbt/crypto_platform/dbt_packages/
+dbt/crypto_platform/logs/
+dbt/crypto_platform/.*.yml
 
 # ─── Airflow ──────────────────────────────────────────────────────────────────
 airflow/logs/
