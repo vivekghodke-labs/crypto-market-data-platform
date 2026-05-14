@@ -1,35 +1,35 @@
-###############################################################################
-# Materialisation: incremental (merge on trade_id)
-# Target: silver_curated.silver_deduped_trades
-#
-# Purpose:
-#   Deduplicates raw trade events from bronze_raw.raw_trades.
-#   The Bronze layer may contain duplicate trade_ids because:
-#     1. The Beam pipeline uses ACCUMULATING window mode — a window can fire
-#        multiple times (speculative early + final), writing the same trades
-#        more than once to Bronze.
-#     2. Network retries from the WebSocket ingestor under reconnection.
-#
-# Deduplication strategy:
-#   ROW_NUMBER() OVER (PARTITION BY trade_id ORDER BY ingested_at ASC)
-#   — keeps the first-ingested record for each trade_id.
-#   This is deterministic and idempotent on re-runs.
-#
-# Incremental logic:
-#   On the first run: full scan of bronze_raw.raw_trades.
-#   On subsequent runs: only processes rows where ingested_at > max(ingested_at)
-#   in the current silver table. BigQuery merge on trade_id handles any late
-#   duplicates that arrive in the incremental window.
-#
-# Partition: trade_date (DATE derived from trade_time_ms) — enables
-#   cost-efficient date-range queries in Gold models.
-###############################################################################
+-- ###############################################################################
+-- # Materialisation: incremental (merge on trade_id)
+-- # Target: silver_curated.silver_deduped_trades
+-- #
+-- # Purpose:
+-- #   Deduplicates raw trade events from bronze_raw.raw_trades.
+-- #   The Bronze layer may contain duplicate trade_ids because:
+-- #     1. The Beam pipeline uses ACCUMULATING window mode — a window can fire
+-- #        multiple times (speculative early + final), writing the same trades
+-- #        more than once to Bronze.
+-- #     2. Network retries from the WebSocket ingestor under reconnection.
+-- #
+-- # Deduplication strategy:
+-- #   ROW_NUMBER() OVER (PARTITION BY trade_id ORDER BY ingested_at ASC)
+-- #   — keeps the first-ingested record for each trade_id.
+-- #   This is deterministic and idempotent on re-runs.
+-- #
+-- # Incremental logic:
+-- #   On the first run: full scan of bronze_raw.raw_trades.
+-- #   On subsequent runs: only processes rows where ingested_at > max(ingested_at)
+-- #   in the current silver table. BigQuery merge on trade_id handles any late
+-- #   duplicates that arrive in the incremental window.
+-- #
+-- # Partition: trade_date (DATE derived from trade_time_ms) — enables
+-- #   cost-efficient date-range queries in Gold models.
+-- ###############################################################################
 
 {{
     config(
         materialized        = 'incremental',
         unique_key          = 'trade_id',
-        incremental_strategy = 'merge',
+        incremental_strategy = 'delete+insert',
         partition_by        = {
             'field': 'trade_date',
             'data_type': 'date',
@@ -56,11 +56,11 @@ source_trades as (
 
         -- Derive a DATE partition column from millisecond timestamp
         date(
-            timestamp_millis(trade_time_ms)
+            epoch_ms(trade_time_ms)
         ) as trade_date,
 
         -- Derive a TIMESTAMP for direct time-series queries
-        timestamp_millis(trade_time_ms) as trade_timestamp
+        epoch_ms(trade_time_ms) as trade_timestamp
 
     from {{ source('bronze_raw', 'raw_trades') }}
 

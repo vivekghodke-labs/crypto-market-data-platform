@@ -1,16 +1,16 @@
-###############################################################################
-# Custom data test — returns rows that VIOLATE the assertion.
-# dbt fails the test if this query returns any rows.
-#
-# Assertion: window_start in silver_ohlcv_validated must not be in the future
-# relative to the dbt run time. Future timestamps indicate:
-#   - System clock skew on the Beam worker (more than 60s drift)
-#   - Corrupt Binance event timestamps
-#   - Test data accidentally ingested into production tables
-#
-# Tolerance: 5-minute grace window to account for minor clock drift
-# between Beam workers and the BigQuery write time.
-###############################################################################
+-- ###############################################################################
+-- # Custom data test — returns rows that VIOLATE the assertion.
+-- # dbt fails the test if this query returns any rows.
+-- #
+-- # Assertion: window_start in silver_ohlcv_validated must not be in the future
+-- # relative to the dbt run time. Future timestamps indicate:
+-- #   - System clock skew on the Beam worker (more than 60s drift)
+-- #   - Corrupt Binance event timestamps
+-- #   - Test data accidentally ingested into production tables
+-- #
+-- # Tolerance: 5-minute grace window to account for minor clock drift
+-- # between Beam workers and the BigQuery write time.
+-- ###############################################################################
 
 select
     window_start,

@@ -1,26 +1,26 @@
-###############################################################################
-# Materialisation: view
-# Target: silver_curated.silver_ohlcv_validated
-#
-# Purpose:
-#   A validation and deduplication layer on top of the Beam-written
-#   ohlcv_1min table. Addresses two concerns:
-#
-#   1. Duplicate windows: Beams ACCUMULATING mode can fire a window
-#      multiple times (early speculative panes + final pane). Each firing
-#      writes a new row to ohlcv_1min with the same window_start/symbol.
-#      This view keeps only the most recent pane per window (latest ingested_at).
-#
-#   2. Data quality assertions: Filters rows that violate OHLCV invariants
-#      (e.g., high < low) — these represent pipeline defects, not valid data.
-#      Filtered rows are visible in the custom data tests for alerting.
-#
-# Materialised as a VIEW (not table) because:
-#   - ohlcv_1min is already partitioned and clustered — BigQuery scans are cheap.
-#   - Gold models query specific date partitions — partition pruning applies
-#     even through the view layer in BigQuery.
-#   - No storage duplication of Silver data.
-###############################################################################
+-- ###############################################################################
+-- # Materialisation: view
+-- # Target: silver_curated.silver_ohlcv_validated
+-- #
+-- # Purpose:
+-- #   A validation and deduplication layer on top of the Beam-written
+-- #   ohlcv_1min table. Addresses two concerns:
+-- #
+-- #   1. Duplicate windows: Beams ACCUMULATING mode can fire a window
+-- #      multiple times (early speculative panes + final pane). Each firing
+-- #      writes a new row to ohlcv_1min with the same window_start/symbol.
+-- #      This view keeps only the most recent pane per window (latest ingested_at).
+-- #
+-- #   2. Data quality assertions: Filters rows that violate OHLCV invariants
+-- #      (e.g., high < low) — these represent pipeline defects, not valid data.
+-- #      Filtered rows are visible in the custom data tests for alerting.
+-- #
+-- # Materialised as a VIEW (not table) because:
+-- #   - ohlcv_1min is already partitioned and clustered — BigQuery scans are cheap.
+-- #   - Gold models query specific date partitions — partition pruning applies
+-- #     even through the view layer in BigQuery.
+-- #   - No storage duplication of Silver data.
+-- ###############################################################################
 
 {{
     config(

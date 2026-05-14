@@ -22,7 +22,6 @@ sources:
       Raw ingestion layer. Contains unprocessed trade events written directly
       by the Binance WebSocket ingestor and Beam pipeline. Schema-on-write.
       Data in this layer is immutable — never updated, only appended.
-    database: vg-ind-2026
     schema: bronze_raw
     tags: ["bronze", "source"]
 
@@ -85,7 +84,6 @@ sources:
       Silver layer tables written directly by the Apache Beam OHLCV pipeline.
       These are the primary source for Gold layer dbt models.
       dbt reads from these tables but does not own their write lifecycle.
-    database: vg-ind-2026
     schema: silver_curated
     tags: ["silver", "source", "beam"]
 

@@ -1,34 +1,34 @@
-###############################################################################
-# Materialisation: table (full refresh, partitioned by trade_date)
-# Target: gold_analytics.gold_moving_averages
-#
-# Purpose:
-#   Computes 7-day and 30-day Simple Moving Averages of the daily BTC/USDT
-#   close price. One row per (symbol, trade_date).
-#
-# SMA Formula (industry standard):
-#   SMA(N) = AVG(close) OVER (
-#       PARTITION BY symbol
-#       ORDER BY trade_date ASC
-#       ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW
-#   )
-#
-# NULL handling:
-#   - sma_7d  is NULL when fewer than 7 days of history exist in the window.
-#   - sma_30d is NULL when fewer than 30 days of history exist in the window.
-#   - sma_Nd_valid flags whether the SMA value is statistically meaningful.
-#   - Looker Studio omits NULL data points from line charts — no misleading
-#     zero values are rendered during the warm-up period.
-#
-# Trend signal:
-#   above_both → close > sma_7d AND close > sma_30d  (bullish — price above both MAs)
-#   below_both → close < sma_7d AND close < sma_30d  (bearish — price below both MAs)
-#   mixed      → any other combination               (transitional / consolidation)
-#
-# Primary consumers:
-#   - Looker Studio Page 1: Price Overview (SMA overlay line chart)
-#   - Looker Studio scorecards: current SMA_7d and SMA_30d values
-###############################################################################
+-- ###############################################################################
+-- # Materialisation: table (full refresh, partitioned by trade_date)
+-- # Target: gold_analytics.gold_moving_averages
+-- #
+-- # Purpose:
+-- #   Computes 7-day and 30-day Simple Moving Averages of the daily BTC/USDT
+-- #   close price. One row per (symbol, trade_date).
+-- #
+-- # SMA Formula (industry standard):
+-- #   SMA(N) = AVG(close) OVER (
+-- #       PARTITION BY symbol
+-- #       ORDER BY trade_date ASC
+-- #       ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW
+-- #   )
+-- #
+-- # NULL handling:
+-- #   - sma_7d  is NULL when fewer than 7 days of history exist in the window.
+-- #   - sma_30d is NULL when fewer than 30 days of history exist in the window.
+-- #   - sma_Nd_valid flags whether the SMA value is statistically meaningful.
+-- #   - Looker Studio omits NULL data points from line charts — no misleading
+-- #     zero values are rendered during the warm-up period.
+-- #
+-- # Trend signal:
+-- #   above_both → close > sma_7d AND close > sma_30d  (bullish — price above both MAs)
+-- #   below_both → close < sma_7d AND close < sma_30d  (bearish — price below both MAs)
+-- #   mixed      → any other combination               (transitional / consolidation)
+-- #
+-- # Primary consumers:
+-- #   - Looker Studio Page 1: Price Overview (SMA overlay line chart)
+-- #   - Looker Studio scorecards: current SMA_7d and SMA_30d values
+-- ###############################################################################
 
 {{
     config(
@@ -165,13 +165,13 @@ final as (
         -- NULL when the respective SMA is not yet valid
         case
             when sma_7d_window_size = 7
-            then {{ safe_divide('(close - sma_7d_raw)', 'sma_7d_raw') }} * 100
+            then ((close - sma_7d_raw) / NULLIF(sma_7d_raw, 0)) * 100
             else null
         end                                             as price_vs_sma_7d_pct,
 
         case
             when sma_30d_window_size = 30
-            then {{ safe_divide('(close - sma_30d_raw)', 'sma_30d_raw') }} * 100
+            then ((close - sma_30d_raw) / NULLIF(sma_30d_raw, 0)) * 100
             else null
         end                                             as price_vs_sma_30d_pct,
 
@@ -204,7 +204,7 @@ final as (
         end                                             as cross_signal,
 
         cumulative_row_count                            as days_of_history,
-        current_timestamp()                             as dbt_updated_at
+        now()                             as dbt_updated_at
 
     from sma_calculations
 

@@ -70,11 +70,11 @@ class PipelineConfig:
 
 
 def build_pipeline_options(config: PipelineConfig) -> PipelineOptions:
-    """Builds DirectRunner pipeline options."""
+    """Builds FlinkRunner pipeline options."""
     options = PipelineOptions(flags=[])
     standard = options.view_as(StandardOptions)
-    standard.runner = "DirectRunner"
-    standard.streaming = False
+    standard.runner = "FlinkRunner"
+    standard.streaming = True
 
-    logger.info("Pipeline configured for DirectRunner (local)")
+    logger.info("Pipeline configured for FlinkRunner (local)")
     return options

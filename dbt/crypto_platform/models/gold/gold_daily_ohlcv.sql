@@ -1,20 +1,20 @@
-###############################################################################
-# Materialisation: table (full refresh, partitioned by trade_date)
-# Target: gold_analytics.gold_daily_ohlcv
-#
-# Purpose:
-#   Rolls up 1-minute OHLCV candles into daily candlesticks.
-#   One row per (symbol, trade_date).
-#
-# OHLCV rollup logic (standard exchange convention):
-#   Open  → open of the first 1-minute candle of the day (by window_start)
-#   High  → MAX(high) across all 1-minute candles of the day
-#   Low   → MIN(low) across all 1-minute candles of the day
-#   Close → close of the last 1-minute candle of the day (by window_start)
-#   Volume→ SUM(volume) — notional USD volume for the day
-#
-# Primary consumer: Looker Studio daily candlestick chart.
-###############################################################################
+-- ###############################################################################
+-- # Materialisation: table (full refresh, partitioned by trade_date)
+-- # Target: gold_analytics.gold_daily_ohlcv
+-- #
+-- # Purpose:
+-- #   Rolls up 1-minute OHLCV candles into daily candlesticks.
+-- #   One row per (symbol, trade_date).
+-- #
+-- # OHLCV rollup logic (standard exchange convention):
+-- #   Open  → open of the first 1-minute candle of the day (by window_start)
+-- #   High  → MAX(high) across all 1-minute candles of the day
+-- #   Low   → MIN(low) across all 1-minute candles of the day
+-- #   Close → close of the last 1-minute candle of the day (by window_start)
+-- #   Volume→ SUM(volume) — notional USD volume for the day
+-- #
+-- # Primary consumer: Looker Studio daily candlestick chart.
+-- ###############################################################################
 
 {{
     config(
@@ -125,17 +125,13 @@ final as (
 
         -- Price change metrics
         cp.daily_close - op.daily_open                  as price_change,
-        {{ safe_divide(
-            '(cp.daily_close - op.daily_open)',
-            'op.daily_open'
-        ) }} * 100                                      as price_change_pct,
+        ((cp.daily_close - op.daily_open) 
+        / NULLIF(op.daily_open, 0)) * 100               as price_change_pct,
 
         -- Intraday range
         da.daily_high - da.daily_low                    as intraday_range,
-        {{ safe_divide(
-            '(da.daily_high - da.daily_low)',
-            'op.daily_open'
-        ) }} * 100                                      as intraday_range_pct,
+        ((da.daily_high - da.daily_low) 
+        / NULLIF(op.daily_open, 0)) * 100               as intraday_range_pct,
 
         -- Candle classification
         case
@@ -143,7 +139,7 @@ final as (
             else 'bearish'
         end                                             as candle_direction,
 
-        current_timestamp()                             as dbt_updated_at
+        now()                                           as dbt_updated_at
 
     from daily_aggregates    da
     inner join open_prices   op on da.trade_date = op.trade_date and da.symbol = op.symbol

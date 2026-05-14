@@ -1,33 +1,33 @@
-###############################################################################
-# Materialisation: table (full refresh)
-# Target: gold_analytics.gold_price_stats_24h
-#
-# Purpose:
-#   24-hour rolling price statistics per symbol.
-#   One row per symbol representing the trailing 24-hour window from
-#   the most recent trade timestamp in the dataset.
-#
-# VWAP (Volume Weighted Average Price) — true formula:
-#   VWAP = SUM(price × quantity) / SUM(quantity)
-#
-#   Source: silver_deduped_trades (individual trade level)
-#   This is the mathematically correct VWAP used by:
-#     - Bloomberg Terminal
-#     - Refinitiv Eikon
-#     - ICE Data Services
-#     - All major exchange reporting standards
-#
-#   Using individual trades (not OHLCV candles) ensures:
-#     - Each trade is weighted by its actual executed quantity
-#     - No approximation from candle aggregation
-#     - Results match exchange-reported VWAP exactly
-#
-# Additional metrics:
-#   - 24h high / low
-#   - Price change vs 24h ago (open price of the trailing window)
-#   - Trade count and total notional volume
-#   - Market activity classification (high/normal/low volume)
-###############################################################################
+-- ###############################################################################
+-- # Materialisation: table (full refresh)
+-- # Target: gold_analytics.gold_price_stats_24h
+-- #
+-- # Purpose:
+-- #   24-hour rolling price statistics per symbol.
+-- #   One row per symbol representing the trailing 24-hour window from
+-- #   the most recent trade timestamp in the dataset.
+-- #
+-- # VWAP (Volume Weighted Average Price) — true formula:
+-- #   VWAP = SUM(price × quantity) / SUM(quantity)
+-- #
+-- #   Source: silver_deduped_trades (individual trade level)
+-- #   This is the mathematically correct VWAP used by:
+-- #     - Bloomberg Terminal
+-- #     - Refinitiv Eikon
+-- #     - ICE Data Services
+-- #     - All major exchange reporting standards
+-- #
+-- #   Using individual trades (not OHLCV candles) ensures:
+-- #     - Each trade is weighted by its actual executed quantity
+-- #     - No approximation from candle aggregation
+-- #     - Results match exchange-reported VWAP exactly
+-- #
+-- # Additional metrics:
+-- #   - 24h high / low
+-- #   - Price change vs 24h ago (open price of the trailing window)
+-- #   - Trade count and total notional volume
+-- #   - Market activity classification (high/normal/low volume)
+-- ###############################################################################
 
 {{
     config(
@@ -64,7 +64,7 @@ trades_24h as (
     cross join latest_trade_time l
 
     where
-        t.trade_timestamp >= timestamp_sub(l.anchor_ts, interval 24 hour)
+        t.trade_timestamp >= (l.anchor_ts - INTERVAL 24 HOUR)
         and t.trade_timestamp <= l.anchor_ts
 
 ),
@@ -81,10 +81,8 @@ vwap_calc as (
         sum(price * quantity)                       as total_notional,   -- SUM(P × Q)
         sum(quantity)                               as total_quantity,   -- SUM(Q)
 
-        {{ safe_divide(
-            'sum(price * quantity)',
-            'sum(quantity)'
-        ) }}                                        as vwap,
+        (sum(price * quantity) 
+        / NULLIF(sum(quantity), 0))                 as vwap,
 
         -- Price range
         max(price)                                  as high_24h,
@@ -101,7 +99,7 @@ vwap_calc as (
         countif(is_market_maker = false)            as taker_trade_count,
 
         -- First trade price in the 24h window (used as 24h open)
-        first_value(price) over (
+        first_value(max(price)) over (
             partition by symbol
             order by anchor_ts     -- static, forces single-row window
         )                                           as _anchor_placeholder
@@ -204,7 +202,7 @@ final as (
             else 'bearish'
         end                                                 as market_direction_24h,
 
-        current_timestamp()                                 as dbt_updated_at
+        now()                                 as dbt_updated_at
 
     from vwap_calc       v
     inner join open_24h  o on v.symbol = o.symbol

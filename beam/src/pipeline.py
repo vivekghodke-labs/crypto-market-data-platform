@@ -8,11 +8,10 @@ Main Apache Beam pipeline — Kafka → MotherDuck (DuckDB).
 
 import logging
 import sys
-
 import apache_beam as beam
-from apache_beam.transforms.window import FixedWindows
-from apache_beam.transforms.trigger import AfterProcessingTime, AccumulationMode, Repeatedly
 
+from apache_beam.transforms.window import FixedWindows
+from apache_beam.transforms.trigger import AfterWatermark, AfterProcessingTime, AccumulationMode
 from .config import PipelineConfig, build_pipeline_options
 from .schema import DUCKDB_SILVER_SCHEMA, DUCKDB_DEAD_LETTER_SCHEMA
 from .transforms import (
@@ -24,7 +23,7 @@ from .transforms import (
     DEAD_LETTER_TAG,
 )
 from .kafka_source import ReadFromKafka
-from .duckdb_sink import WriteToDuckDB, WriteDeadLetterToDuckDB
+from .duckdb_sink import WriteToDuckDB, WriteDeadLetterToDuckDB, WriteRawTradesToDuckDB
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,14 +46,16 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
         sasl_password=config.kafka_sasl_password,
     )
 
-    raw_messages | "DebugPrintKafka" >> beam.Map(
-        lambda msg: logger.info("KAFKA MESSAGE ARRIVED: %s", msg[:100])
-    )
-
     # ── Parse & Validate ──────────────────────────────────────────────────────
     parsed = raw_messages | "ParseAndValidate" >> ParseAndValidate()
     valid_trades = parsed["valid"]
     dead_letter_messages = parsed[DEAD_LETTER_TAG]
+
+    # ── Bronze: raw trades → MotherDuck ───────────────────────────────────────
+    # Wired BEFORE windowing — every valid tick persisted to bronze_raw.raw_trades
+    valid_trades | "WriteRawTrades" >> WriteRawTradesToDuckDB(
+        db_path=config.duckdb_path,
+    )
 
     # ── Dead-letter sink → bronze_raw.pipeline_dead_letter (MotherDuck) ───────
     dead_letter_messages | "WriteDeadLetter" >> WriteDeadLetterToDuckDB(
@@ -70,9 +71,14 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
     # ── Fixed Window (60s) ────────────────────────────────────────────────────
     windowed = timestamped | "WindowIntoFixedWindows" >> beam.WindowInto(
         FixedWindows(config.window_size_seconds),
-        trigger=Repeatedly(AfterProcessingTime(config.window_size_seconds)),
-        accumulation_mode=AccumulationMode.DISCARDING,
-        allowed_lateness=config.allowed_lateness_seconds
+        trigger=AfterWatermark(
+            # Optional: Emit early partial candles before the window closes
+            early=AfterProcessingTime(5),
+            # Emit updated candles if late trades arrive
+            late=AfterProcessingTime(5)
+        ),
+        accumulation_mode=AccumulationMode.ACCUMULATING,
+        allowed_lateness=config.allowed_lateness_seconds # e.g., 60 seconds
     )
 
     # ── Key by Symbol ─────────────────────────────────────────────────────────
@@ -83,13 +89,6 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
 
     # ── Format for DuckDB ─────────────────────────────────────────────────────
     formatted = aggregated | "FormatOHLCV" >> beam.ParDo(FormatOHLCV())
-
-    formatted | "DebugCandle" >> beam.Map(
-        lambda c: logger.info(
-            "CANDLE GENERATED: %s → %s | vol=%s",
-            c["window_start"], c["window_end"], c["volume"],
-        )
-    )
 
     # ── Write OHLCV → silver_curated.ohlcv_1min (MotherDuck) ─────────────────
     formatted | "WriteOHLCVToDuckDB" >> WriteToDuckDB(

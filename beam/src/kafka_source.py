@@ -39,7 +39,7 @@ class ReadFromKafka(beam.PTransform):
             'sasl.mechanism': 'SCRAM-SHA-256',
             # JAAS config is required for SCRAM authentication in the Java worker
             'sasl.jaas.config': f'org.apache.kafka.common.security.scram.ScramLoginModule required username="{self.sasl_username}" password="{self.sasl_password}";',
-            'auto.offset.reset': 'earliest',
+            'auto.offset.reset': 'latest',
         }
 
         return (
@@ -47,8 +47,7 @@ class ReadFromKafka(beam.PTransform):
             | "Official Kafka Read" >> OfficialBeamKafkaReader(
                 consumer_config=consumer_config,
                 topics=[self.topic],
-                with_metadata=False,
-                max_num_records=10000
+                with_metadata=False
             )
             # OfficialBeamKafkaReader outputs tuples of (key, value).
             # Your original code yielded raw bytes. This Map extracts just the value bytes.
