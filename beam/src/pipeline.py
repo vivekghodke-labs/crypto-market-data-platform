@@ -11,6 +11,7 @@ import sys
 
 import apache_beam as beam
 from apache_beam.transforms.window import FixedWindows
+from apache_beam.transforms.trigger import AfterProcessingTime, AccumulationMode, Repeatedly
 
 from .config import PipelineConfig, build_pipeline_options
 from .schema import DUCKDB_SILVER_SCHEMA, DUCKDB_DEAD_LETTER_SCHEMA
@@ -68,7 +69,10 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
 
     # ── Fixed Window (60s) ────────────────────────────────────────────────────
     windowed = timestamped | "WindowIntoFixedWindows" >> beam.WindowInto(
-        FixedWindows(config.window_size_seconds)
+        FixedWindows(config.window_size_seconds),
+        trigger=Repeatedly(AfterProcessingTime(config.window_size_seconds)),
+        accumulation_mode=AccumulationMode.DISCARDING,
+        allowed_lateness=config.allowed_lateness_seconds
     )
 
     # ── Key by Symbol ─────────────────────────────────────────────────────────
