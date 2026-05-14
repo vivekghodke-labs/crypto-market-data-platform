@@ -1,10 +1,9 @@
 """
-Main Apache Beam pipeline — Kafka → DuckDB.
+Main Apache Beam pipeline — Kafka → MotherDuck (DuckDB).
 
-Changes from GCP version:
-- Replaced ReadFromPubSub with custom KafkaSource
-- Replaced WriteToBigQuery with WriteToDuckDB
-- Removed dead-letter BigQuery write (log to file instead)
+- Replaced LogDeadLetter (log-only) with WriteDeadLetterToDuckDB sink.
+- DUCKDB_DEAD_LETTER_SCHEMA imported and passed to dead-letter sink.
+- WriteDeadLetterToDuckDB imported from duckdb_sink.
 """
 
 import logging
@@ -12,11 +11,9 @@ import sys
 
 import apache_beam as beam
 from apache_beam.transforms.window import FixedWindows
-from apache_beam.transforms.trigger import AfterWatermark, AfterProcessingTime, AccumulationMode, AfterCount
-from apache_beam.utils.timestamp import Duration
 
 from .config import PipelineConfig, build_pipeline_options
-from .schema import DUCKDB_BRONZE_SCHEMA, DUCKDB_SILVER_SCHEMA
+from .schema import DUCKDB_SILVER_SCHEMA, DUCKDB_DEAD_LETTER_SCHEMA
 from .transforms import (
     ParseAndValidate,
     AssignEventTimestamp,
@@ -26,17 +23,21 @@ from .transforms import (
     DEAD_LETTER_TAG,
 )
 from .kafka_source import ReadFromKafka
-from .duckdb_sink import WriteToDuckDB
+from .duckdb_sink import WriteToDuckDB, WriteDeadLetterToDuckDB
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stdout)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    stream=sys.stdout,
+)
 logger = logging.getLogger(__name__)
 
 
 def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
-    """Constructs the Beam pipeline."""
+    """Constructs the Beam pipeline graph."""
     pipeline = beam.Pipeline(options=options)
 
-    # Source: Kafka
+    # ── Source: Kafka (Redpanda Cloud) ────────────────────────────────────────
     raw_messages = pipeline | "ReadFromKafka" >> ReadFromKafka(
         bootstrap_servers=config.kafka_bootstrap_servers,
         topic=config.kafka_topic,
@@ -46,47 +47,52 @@ def build_pipeline(config: PipelineConfig, options) -> beam.Pipeline:
     )
 
     raw_messages | "DebugPrintKafka" >> beam.Map(
-        lambda msg: logger.info(f"DEBUG - KAFKA MESSAGE ARRIVED: {msg[:100]}")
+        lambda msg: logger.info("KAFKA MESSAGE ARRIVED: %s", msg[:100])
     )
 
-    # Parse & Validate
+    # ── Parse & Validate ──────────────────────────────────────────────────────
     parsed = raw_messages | "ParseAndValidate" >> ParseAndValidate()
     valid_trades = parsed["valid"]
     dead_letter_messages = parsed[DEAD_LETTER_TAG]
 
-    # Dead-letter: Write to local log file (DuckDB dead-letter table later)
-    dead_letter_messages | "LogDeadLetter" >> beam.Map(
-        lambda msg: logger.warning(f"Dead letter: {msg[:200]}")
+    # ── Dead-letter sink → bronze_raw.pipeline_dead_letter (MotherDuck) ───────
+    dead_letter_messages | "WriteDeadLetter" >> WriteDeadLetterToDuckDB(
+        db_path=config.duckdb_path,
+        schema_sql=DUCKDB_DEAD_LETTER_SCHEMA,
     )
 
-    # Event Timestamp
-    timestamped = valid_trades | "AssignEventTimestamp" >> beam.ParDo(AssignEventTimestamp())
+    # ── Event Timestamp ───────────────────────────────────────────────────────
+    timestamped = valid_trades | "AssignEventTimestamp" >> beam.ParDo(
+        AssignEventTimestamp()
+    )
 
-    # Fixed Window (60s)
+    # ── Fixed Window (60s) ────────────────────────────────────────────────────
     windowed = timestamped | "WindowIntoFixedWindows" >> beam.WindowInto(
         FixedWindows(config.window_size_seconds)
     )
 
-    # Key by Symbol
+    # ── Key by Symbol ─────────────────────────────────────────────────────────
     keyed = windowed | "ExtractKey" >> beam.ParDo(ExtractKey())
 
-    # OHLCV Aggregation
+    # ── OHLCV Aggregation ─────────────────────────────────────────────────────
     aggregated = keyed | "AggregateOHLCV" >> beam.CombinePerKey(OHLCVCombineFn())
 
-    # Format for DuckDB
+    # ── Format for DuckDB ─────────────────────────────────────────────────────
     formatted = aggregated | "FormatOHLCV" >> beam.ParDo(FormatOHLCV())
 
-    # ADD THIS DEBUG LINE:
     formatted | "DebugCandle" >> beam.Map(
-        lambda c: logger.info(f"CANDLE GENERATED: {c['window_start']} to {c['window_end']} | Vol: {c['volume']}")
+        lambda c: logger.info(
+            "CANDLE GENERATED: %s → %s | vol=%s",
+            c["window_start"], c["window_end"], c["volume"],
+        )
     )
 
-    # Write to DuckDB Silver
+    # ── Write OHLCV → silver_curated.ohlcv_1min (MotherDuck) ─────────────────
     formatted | "WriteOHLCVToDuckDB" >> WriteToDuckDB(
         db_path=config.duckdb_path,
-        table="silver.ohlcv_1min",
+        table="silver_curated.ohlcv_1min",
         schema_sql=DUCKDB_SILVER_SCHEMA,
-        batch_size=1
+        batch_size=1,
     )
 
     return pipeline
@@ -97,7 +103,10 @@ def run() -> None:
     config = PipelineConfig()
     options = build_pipeline_options(config)
 
-    logger.info("Starting OHLCV pipeline | runner=DirectRunner | window=%ds", config.window_size_seconds)
+    logger.info(
+        "Starting OHLCV pipeline | runner=DirectRunner | window=%ds",
+        config.window_size_seconds,
+    )
 
     pipeline = build_pipeline(config, options)
     result = pipeline.run()

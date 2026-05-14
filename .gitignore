@@ -59,6 +59,9 @@ dbt/crypto_platform/dbt_packages/
 dbt/crypto_platform/logs/
 dbt/crypto_platform/.*.yml
 
+# ─── beam ──────────────────────────────────────────────────────────────────────
+beam/*.db
+
 # ─── Airflow ──────────────────────────────────────────────────────────────────
 airflow/logs/
 airflow/plugins/

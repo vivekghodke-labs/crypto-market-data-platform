@@ -41,8 +41,9 @@ class PipelineConfig:
         self.kafka_topic: str = _get_env("KAFKA_TOPIC_RAW_TRADES", "btc-raw-trades")
         self.kafka_consumer_group: str = _get_env("KAFKA_CONSUMER_GROUP", "beam-ohlcv-pipeline")
 
-        # DuckDB
-        self.duckdb_path: str = _get_env("DUCKDB_PATH", "/data/duckdb/crypto_platform.db")
+        # DuckDB / MotherDuck — BUGFIX: duckdb_path_raw was referenced before assignment.
+        # Resolve local path first, then override if MOTHERDUCK_TOKEN is present.
+        duckdb_path_raw: str = _get_env("DUCKDB_PATH", "/data/duckdb/crypto_platform.db")
 
         # If MOTHERDUCK_TOKEN is set, force MotherDuck path
         motherduck_token = os.getenv("MOTHERDUCK_TOKEN")
@@ -51,7 +52,7 @@ class PipelineConfig:
             logger.info("Using MotherDuck connection")
         else:
             self.duckdb_path = duckdb_path_raw
-            logger.info(f"Using local DuckDB: {self.duckdb_path}")
+            logger.info("Using local DuckDB: %s", self.duckdb_path)
 
         # Window config
         self.window_size_seconds: int = WINDOW_SIZE_SECONDS

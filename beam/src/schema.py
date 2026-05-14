@@ -2,9 +2,12 @@
 Data contracts for the Beam OHLCV pipeline.
 
 Defines:
-  TradeRecord    — Parsed, validated trade event from Pub/Sub message.
-  OHLCVRecord    — Aggregated 1-minute OHLCV candle written to BigQuery Silver.
-  BQ_OHLCV_SCHEMA — BigQuery table schema for silver_curated.ohlcv_1min.
+  TradeRecord         — Parsed, validated trade event from Pub/Sub message.
+  OHLCVRecord         — Aggregated 1-minute OHLCV candle written to BigQuery Silver.
+  BQ_OHLCV_SCHEMA     — BigQuery table schema for silver_curated.ohlcv_1min.
+  DUCKDB_BRONZE_SCHEMA         — DDL for bronze_raw.raw_trades (MotherDuck).
+  DUCKDB_DEAD_LETTER_SCHEMA    — DDL for bronze_raw.pipeline_dead_letter (MotherDuck).
+  DUCKDB_SILVER_SCHEMA         — DDL for silver_curated.ohlcv_1min (MotherDuck).
 
 Design note:
   We use plain dataclasses (not Pydantic) for Beam element types.
@@ -43,19 +46,16 @@ class OHLCVAccumulator:
     """
     Mutable accumulator used by OHLCVCombineFn during the CombinePerKey step.
     Holds running state for one symbol within one fixed window.
-
-    Fields are ordered to match trade arrival — open is set on first trade,
-    close is updated on every subsequent trade (last-write-wins within window).
     """
     open: Decimal = Decimal("0")
     high: Decimal = Decimal("0")
     low: Decimal = Decimal("0")
     close: Decimal = Decimal("0")
-    volume: Decimal = Decimal("0")      # Σ (price × quantity)
+    volume: Decimal = Decimal("0")
     trade_count: int = 0
-    first_trade_time_ms: int = 0        # Used to determine open price
-    last_trade_time_ms: int = 0         # Used to determine close price
-    is_empty: bool = True               # Guards first-trade initialisation
+    first_trade_time_ms: int = 0
+    last_trade_time_ms: int = 0
+    is_empty: bool = True
 
 
 @dataclass
@@ -64,16 +64,16 @@ class OHLCVRecord:
     A completed 1-minute OHLCV candle written to BigQuery Silver layer.
     One record per (symbol, window) pair.
     """
-    window_start: str           # ISO 8601 UTC — BigQuery TIMESTAMP compatible
-    window_end: str             # ISO 8601 UTC
+    window_start: str
+    window_end: str
     symbol: str
-    open: str                   # Decimal serialised as string — converted to
-    high: str                   # NUMERIC by BigQuery schema on insert.
-    low: str                    # String avoids float precision loss in transit.
+    open: str
+    high: str
+    low: str
     close: str
     volume: str
     trade_count: int
-    ingested_at: str            # ISO 8601 UTC — pipeline write timestamp
+    ingested_at: str
 
 
 # ─── BigQuery Schema ──────────────────────────────────────────────────────────
@@ -93,7 +93,6 @@ BQ_OHLCV_SCHEMA = {
     ]
 }
 
-# BigQuery schema string format for WriteToBigQuery (alternative format)
 BQ_OHLCV_SCHEMA_STR = (
     "window_start:TIMESTAMP,"
     "window_end:TIMESTAMP,"
@@ -107,12 +106,12 @@ BQ_OHLCV_SCHEMA_STR = (
     "ingested_at:TIMESTAMP"
 )
 
-# ─── DuckDB Schema ────────────────────────────────────────────────────────────
+# ─── DuckDB / MotherDuck Schemas ──────────────────────────────────────────────
 
 DUCKDB_BRONZE_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS bronze;
+CREATE SCHEMA IF NOT EXISTS bronze_raw;
 
-CREATE TABLE IF NOT EXISTS bronze.raw_trades (
+CREATE TABLE IF NOT EXISTS bronze_raw.raw_trades (
     event_type VARCHAR NOT NULL,
     event_time_ms BIGINT NOT NULL,
     symbol VARCHAR NOT NULL,
@@ -125,10 +124,20 @@ CREATE TABLE IF NOT EXISTS bronze.raw_trades (
 );
 """
 
-DUCKDB_SILVER_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS silver;
+DUCKDB_DEAD_LETTER_SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS bronze_raw;
 
-CREATE TABLE IF NOT EXISTS silver.ohlcv_1min (
+CREATE TABLE IF NOT EXISTS bronze_raw.pipeline_dead_letter (
+    raw_message VARCHAR,
+    pipeline_error VARCHAR,
+    logged_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+DUCKDB_SILVER_SCHEMA = """
+CREATE SCHEMA IF NOT EXISTS silver_curated;
+
+CREATE TABLE IF NOT EXISTS silver_curated.ohlcv_1min (
     window_start TIMESTAMP NOT NULL,
     window_end TIMESTAMP NOT NULL,
     symbol VARCHAR NOT NULL,
