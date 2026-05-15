@@ -24,11 +24,9 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
-from pydantic import ValidationError
 
 from src.websocket_client import (
     BinanceWebSocketClient,
-    _BACKOFF_BASE_SECONDS,
     _BACKOFF_MAX_SECONDS,
 )
 
