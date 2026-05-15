@@ -89,15 +89,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
-    logger.info("Ingestor service shutting down")
+    logger.info("Ingestor service shutting down. Intercepted SIGTERM.")
     ws_task.cancel()
     try:
         await asyncio.wait_for(ws_task, timeout=5.0)
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
 
-    publisher.flush()
-    logger.info("Ingestor service stopped cleanly")
+    # Enforce a timeout on the Kafka flush
+    pending_count = publisher.flush(timeout=10.0)
+    if pending_count > 0:
+        logger.warning(f"Dropped {pending_count} Kafka messages due to flush timeout.")
+    else:
+        logger.info("Ingestor service stopped cleanly. All messages flushed.")
 
 
 app = FastAPI(
