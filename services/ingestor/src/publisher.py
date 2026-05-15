@@ -8,13 +8,14 @@ Design:
 - Topic routing: valid → btc-raw-trades, rejected → btc-dead-letter
 """
 
+from datetime import datetime, timezone
 import json
 from decimal import Decimal
 
 from confluent_kafka import Producer, KafkaException
 
 from .logger import get_logger
-from .schema import BinanceTradeEvent, DeadLetterEnvelope
+from .schema import BinanceTradeEvent
 
 logger = get_logger(__name__)
 
@@ -80,9 +81,15 @@ class KafkaPublisher:
             raise
 
     def publish_dead_letter(self, raw_message: str, error: str) -> None:
-        """Publishes a rejected message to btc-dead-letter topic."""
-        envelope = DeadLetterEnvelope(raw_message=raw_message, error=error)
-        payload = envelope.model_dump_json().encode("utf-8")
+        """Publishes a rejected message to btc-dead-letter matching Bronze schema."""
+
+        # Bypass Pydantic envelope to strictly match your SQL schema
+        payload_dict = {
+            "raw_message": raw_message,
+            "pipeline_error": error,
+            "logged_at": datetime.now(timezone.utc).isoformat(),
+        }
+        payload = json.dumps(payload_dict).encode("utf-8")
 
         try:
             self._producer.produce(
@@ -102,9 +109,9 @@ class KafkaPublisher:
                 exc_info=True,
             )
 
-    def flush(self) -> None:
-        """Flushes pending messages (call on shutdown)."""
-        self._producer.flush()
+    def flush(self, timeout: float = -1.0) -> int:
+        """Flushes pending messages."""
+        return self._producer.flush(timeout)
 
     @staticmethod
     def _delivery_callback(err, msg):

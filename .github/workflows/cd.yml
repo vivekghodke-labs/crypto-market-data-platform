@@ -8,46 +8,26 @@
 name: CD
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"] # Replace with exact name string of your CI workflow
+    types: [completed]
     branches: [main]
-    paths:
-      - "services/ingestor/**"
-      - "render.yaml"
-      - ".github/workflows/cd.yml"
 
 jobs:
-
   deploy:
     name: Deploy → Render
     runs-on: ubuntu-latest
+    # Only deploy if CI actually passed
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Trigger Render deploy hook
         run: |
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
-
-          echo "Render deploy hook response: ${HTTP_STATUS}"
-
+          
           if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
-            echo "Deploy hook failed with status ${HTTP_STATUS}"
+            echo "Deploy hook failed: ${HTTP_STATUS}"
             exit 1
           fi
-
           echo "Deploy triggered successfully."
-
-      - name: Write deploy summary
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" << EOF
-          ## Deployment Summary
-
-          | Field | Value |
-          |---|---|
-          | Service | \`crypto-ingestor\` |
-          | Platform | Render Free |
-          | Commit | \`${GITHUB_SHA}\` |
-          | Triggered by | ${GITHUB_ACTOR} |
-          | Status | Deploy hook accepted ✓ |
-
-          > Monitor live deploy at: https://dashboard.render.com
-          EOF

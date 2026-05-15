@@ -1,7 +1,7 @@
 import os
 import asyncio
 import pytest
-from unittest.mock import patch, AsyncMock, PropertyMock
+from unittest.mock import patch, AsyncMock, PropertyMock, MagicMock
 from fastapi.testclient import TestClient
 
 # INJECT ENVIRONMENT VARIABLES BEFORE IMPORTING THE APP
@@ -22,6 +22,16 @@ def mock_background_services():
         patch("src.main.KafkaPublisher") as mock_pub,
         patch("src.main.BinanceWebSocketClient") as mock_ws,
     ):
+        mock_pub_instance = mock_pub.return_value
+
+        # FIX: Ensure both publisher.flush() AND publisher._producer.flush() return an integer.
+        # This prevents the MagicMock > int TypeError during lifespan shutdown.
+        mock_pub_instance.flush.return_value = 0
+
+        mock_producer = MagicMock()
+        mock_producer.flush.return_value = 0
+        mock_pub_instance._producer = mock_producer
+
         mock_ws_instance = mock_ws.return_value
 
         type(mock_ws_instance).stats = PropertyMock(
@@ -33,13 +43,10 @@ def mock_background_services():
             }
         )
 
-        # We simulate a long-running connection that exits cleanly when cancelled.
         async def hanging_run():
             try:
-                # Sleep a long time to keep ws_task.done() == False during the test
                 await asyncio.sleep(60)
             except asyncio.CancelledError:
-                # Catch cancellation triggered by lifespan shutdown
                 pass
 
         mock_ws_instance.run = AsyncMock(side_effect=hanging_run)
