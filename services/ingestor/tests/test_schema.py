@@ -18,6 +18,7 @@ from src.schema import BinanceTradeEvent, DeadLetterEnvelope
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def valid_payload() -> dict:
     """Minimal valid Binance trade event payload using Binance field aliases."""
@@ -35,8 +36,8 @@ def valid_payload() -> dict:
 
 # ─── Valid Payload Tests ───────────────────────────────────────────────────────
 
-class TestBinanceTradeEventValid:
 
+class TestBinanceTradeEventValid:
     def test_valid_payload_parses_successfully(self, valid_payload: dict) -> None:
         event = BinanceTradeEvent.model_validate(valid_payload)
         assert event.symbol == "BTCUSDT"
@@ -73,8 +74,8 @@ class TestBinanceTradeEventValid:
 
 # ─── Field Validator Tests ─────────────────────────────────────────────────────
 
-class TestBinanceTradeEventFieldValidation:
 
+class TestBinanceTradeEventFieldValidation:
     def test_wrong_event_type_rejected(self, valid_payload: dict) -> None:
         valid_payload["e"] = "aggTrade"
         with pytest.raises(ValidationError) as exc_info:
@@ -133,35 +134,39 @@ class TestBinanceTradeEventFieldValidation:
 
 # ─── Cross-field Validator Tests ───────────────────────────────────────────────
 
-class TestBinanceTradeEventModelValidator:
 
+class TestBinanceTradeEventModelValidator:
     def test_trade_time_within_tolerance_accepted(self, valid_payload: dict) -> None:
         """trade_time_ms up to 5s before event_time_ms is acceptable."""
         valid_payload["E"] = 1700000005000
-        valid_payload["T"] = 1700000000000   # exactly 5s before — boundary
+        valid_payload["T"] = 1700000000000  # exactly 5s before — boundary
         event = BinanceTradeEvent.model_validate(valid_payload)
         assert event is not None
 
-    def test_trade_time_far_after_event_time_rejected(self, valid_payload: dict) -> None:
+    def test_trade_time_far_after_event_time_rejected(
+        self, valid_payload: dict
+    ) -> None:
         """trade_time_ms more than 5s AFTER event_time_ms signals corrupt data."""
         valid_payload["E"] = 1700000000000
-        valid_payload["T"] = 1700000006000   # 6s after event_time
+        valid_payload["T"] = 1700000006000  # 6s after event_time
         with pytest.raises(ValidationError) as exc_info:
             BinanceTradeEvent.model_validate(valid_payload)
         assert "corrupt timestamp" in str(exc_info.value)
 
-    def test_trade_time_slightly_after_event_time_accepted(self, valid_payload: dict) -> None:
+    def test_trade_time_slightly_after_event_time_accepted(
+        self, valid_payload: dict
+    ) -> None:
         """Small jitter (< 5s) between trade_time and event_time is acceptable."""
         valid_payload["E"] = 1700000000000
-        valid_payload["T"] = 1700000004999   # 4.999s after — within tolerance
+        valid_payload["T"] = 1700000004999  # 4.999s after — within tolerance
         event = BinanceTradeEvent.model_validate(valid_payload)
         assert event is not None
 
 
 # ─── DeadLetterEnvelope Tests ──────────────────────────────────────────────────
 
-class TestDeadLetterEnvelope:
 
+class TestDeadLetterEnvelope:
     def test_dead_letter_envelope_construction(self) -> None:
         envelope = DeadLetterEnvelope(
             raw_message='{"e": "aggTrade"}',

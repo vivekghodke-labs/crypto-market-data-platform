@@ -4,6 +4,7 @@ Uses Python's built-in logging module with a custom JSON formatter.
 Every log record is emitted as a single-line JSON object — compatible
 with GCP Cloud Logging's structured log format.
 """
+
 import os
 import json
 import logging
@@ -48,11 +49,30 @@ class JsonFormatter(logging.Formatter):
         # Attach any extra fields passed via `extra=` kwarg
         for key, value in record.__dict__.items():
             if key not in {
-                "args", "asctime", "created", "exc_info", "exc_text",
-                "filename", "funcName", "id", "levelname", "levelno",
-                "lineno", "module", "msecs", "message", "msg", "name",
-                "pathname", "process", "processName", "relativeCreated",
-                "stack_info", "thread", "threadName", "taskName",
+                "args",
+                "asctime",
+                "created",
+                "exc_info",
+                "exc_text",
+                "filename",
+                "funcName",
+                "id",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "message",
+                "msg",
+                "name",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "stack_info",
+                "thread",
+                "threadName",
+                "taskName",
             }:
                 log_entry[key] = value
 

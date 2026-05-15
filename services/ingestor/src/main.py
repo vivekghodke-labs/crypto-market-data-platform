@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     import logging
+
     logging.getLogger().setLevel(settings.log_level.upper())
 
     publisher = KafkaPublisher(
@@ -159,4 +160,5 @@ async def root() -> JSONResponse:
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("src.main:app", host="0.0.0.0", port=8080, reload=True)

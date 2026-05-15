@@ -37,6 +37,7 @@ pytestmark = pytest.mark.asyncio
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def mock_publisher() -> MagicMock:
     publisher = MagicMock()
@@ -54,22 +55,24 @@ def client(mock_publisher) -> BinanceWebSocketClient:
 
 
 def _make_valid_raw_message() -> str:
-    return json.dumps({
-        "e": "trade",
-        "E": 1700000001000,
-        "s": "BTCUSDT",
-        "t": 555001,
-        "p": "43100.00",
-        "q": "0.003",
-        "T": 1700000000900,
-        "m": False,
-    })
+    return json.dumps(
+        {
+            "e": "trade",
+            "E": 1700000001000,
+            "s": "BTCUSDT",
+            "t": 555001,
+            "p": "43100.00",
+            "q": "0.003",
+            "T": 1700000000900,
+            "m": False,
+        }
+    )
 
 
 # ─── _process_message Tests ────────────────────────────────────────────────────
 
-class TestProcessMessage:
 
+class TestProcessMessage:
     async def test_valid_message_calls_publish_trade(
         self, client: BinanceWebSocketClient, mock_publisher: MagicMock
     ) -> None:
@@ -102,16 +105,18 @@ class TestProcessMessage:
         self, client: BinanceWebSocketClient, mock_publisher: MagicMock
     ) -> None:
         """Wrong event_type → ValidationError → dead-letter."""
-        bad_payload = json.dumps({
-            "e": "aggTrade",  # Wrong — must be "trade"
-            "E": 1700000001000,
-            "s": "BTCUSDT",
-            "t": 555001,
-            "p": "43100.00",
-            "q": "0.003",
-            "T": 1700000000900,
-            "m": False,
-        })
+        bad_payload = json.dumps(
+            {
+                "e": "aggTrade",  # Wrong — must be "trade"
+                "E": 1700000001000,
+                "s": "BTCUSDT",
+                "t": 555001,
+                "p": "43100.00",
+                "q": "0.003",
+                "T": 1700000000900,
+                "m": False,
+            }
+        )
         await client._process_message(bad_payload)
         assert mock_publisher.publish_dead_letter.call_count == 1
         assert mock_publisher.publish_trade.call_count == 0
@@ -119,16 +124,18 @@ class TestProcessMessage:
     async def test_wrong_symbol_routes_to_dead_letter(
         self, client: BinanceWebSocketClient, mock_publisher: MagicMock
     ) -> None:
-        bad_payload = json.dumps({
-            "e": "trade",
-            "E": 1700000001000,
-            "s": "ETHUSDT",
-            "t": 555001,
-            "p": "2400.00",
-            "q": "0.1",
-            "T": 1700000000900,
-            "m": False,
-        })
+        bad_payload = json.dumps(
+            {
+                "e": "trade",
+                "E": 1700000001000,
+                "s": "ETHUSDT",
+                "t": 555001,
+                "p": "2400.00",
+                "q": "0.1",
+                "T": 1700000000900,
+                "m": False,
+            }
+        )
         await client._process_message(bad_payload)
         assert mock_publisher.publish_dead_letter.call_count == 1
 
@@ -159,8 +166,8 @@ class TestProcessMessage:
 
 # ─── Backoff Tests ─────────────────────────────────────────────────────────────
 
-class TestBackoffSleep:
 
+class TestBackoffSleep:
     async def test_backoff_increments_attempt_counter(
         self, client: BinanceWebSocketClient
     ) -> None:
@@ -187,9 +194,7 @@ class TestBackoffSleep:
 
         assert sleep_durations[0] < sleep_durations[1] < sleep_durations[2]
 
-    async def test_backoff_capped_at_max(
-        self, client: BinanceWebSocketClient
-    ) -> None:
+    async def test_backoff_capped_at_max(self, client: BinanceWebSocketClient) -> None:
         # Simulate many failed reconnects
         client._reconnect_attempt = 100
 
@@ -208,8 +213,8 @@ class TestBackoffSleep:
 
 # ─── Stats Tests ───────────────────────────────────────────────────────────────
 
-class TestStats:
 
+class TestStats:
     def test_initial_stats(self, client: BinanceWebSocketClient) -> None:
         stats = client.stats
         assert stats["messages_processed"] == 0
@@ -229,8 +234,8 @@ class TestStats:
 
 # ─── stop() Tests ─────────────────────────────────────────────────────────────
 
-class TestStop:
 
+class TestStop:
     async def test_stop_sets_running_false(
         self, client: BinanceWebSocketClient
     ) -> None:
@@ -238,10 +243,11 @@ class TestStop:
         await client.stop()
         assert client._running is False
 
+
 # ─── Run & Lifecycle Tests ─────────────────────────────────────────────────────
 
-class TestRun:
 
+class TestRun:
     async def test_run_handles_cancelled_error(
         self, client: BinanceWebSocketClient
     ) -> None:
@@ -251,7 +257,7 @@ class TestRun:
             client, "_connect_and_consume", side_effect=asyncio.CancelledError
         ):
             await client.run()
-        
+
         # Should exit the loop and set _running to False
         assert client._running is False
 
@@ -282,6 +288,7 @@ class TestRun:
         self, client: BinanceWebSocketClient
     ) -> None:
         """Test that if _connect_and_consume returns cleanly and running=False, it exits."""
+
         async def mock_connect():
             await client.stop()
 
@@ -296,8 +303,8 @@ class TestRun:
 
 # ─── Connect and Consume Tests ─────────────────────────────────────────────────
 
-class TestConnectAndConsume:
 
+class TestConnectAndConsume:
     @patch("src.websocket_client.websockets.connect")
     async def test_connect_and_consume_processes_messages(
         self, mock_connect: MagicMock, client: BinanceWebSocketClient
@@ -306,7 +313,7 @@ class TestConnectAndConsume:
         # 1. Setup mock websocket that yields two messages
         mock_ws = AsyncMock()
         mock_ws.__aiter__.return_value = ["message_1", "message_2"]
-        
+
         # 2. Setup the mock context manager returned by websockets.connect
         mock_context_manager = AsyncMock()
         mock_context_manager.__aenter__.return_value = mock_ws
@@ -321,7 +328,4 @@ class TestConnectAndConsume:
         # Assertions
         assert client._reconnect_attempt == 0
         assert mock_process.call_count == 2
-        mock_process.assert_has_calls([
-            call("message_1"),
-            call("message_2")
-        ])
+        mock_process.assert_has_calls([call("message_1"), call("message_2")])

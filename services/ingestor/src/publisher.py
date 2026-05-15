@@ -34,15 +34,15 @@ class KafkaPublisher:
         self._dead_letter_topic = dead_letter_topic
 
         config = {
-            'bootstrap.servers': bootstrap_servers,
-            'security.protocol': 'SASL_SSL',
-            'sasl.mechanism': 'SCRAM-SHA-256',
-            'sasl.username': sasl_username,
-            'sasl.password': sasl_password,
-            'client.id': 'crypto-ingestor',
-            'acks': 'all',  # Wait for all replicas
-            'retries': 3,
-            'retry.backoff.ms': 1000,
+            "bootstrap.servers": bootstrap_servers,
+            "security.protocol": "SASL_SSL",
+            "sasl.mechanism": "SCRAM-SHA-256",
+            "sasl.username": sasl_username,
+            "sasl.password": sasl_password,
+            "client.id": "crypto-ingestor",
+            "acks": "all",  # Wait for all replicas
+            "retries": 3,
+            "retry.backoff.ms": 1000,
         }
 
         self._producer = Producer(config)
@@ -65,8 +65,8 @@ class KafkaPublisher:
         try:
             self._producer.produce(
                 topic=self._raw_trades_topic,
-                key=str(event.trade_id).encode('utf-8'),
-                value=payload.encode('utf-8'),
+                key=str(event.trade_id).encode("utf-8"),
+                value=payload.encode("utf-8"),
                 callback=self._delivery_callback,
             )
             self._producer.poll(0)  # Trigger delivery callbacks
@@ -82,7 +82,7 @@ class KafkaPublisher:
     def publish_dead_letter(self, raw_message: str, error: str) -> None:
         """Publishes a rejected message to btc-dead-letter topic."""
         envelope = DeadLetterEnvelope(raw_message=raw_message, error=error)
-        payload = envelope.model_dump_json().encode('utf-8')
+        payload = envelope.model_dump_json().encode("utf-8")
 
         try:
             self._producer.produce(
@@ -91,7 +91,9 @@ class KafkaPublisher:
                 callback=self._delivery_callback,
             )
             self._producer.poll(0)
-            logger.warning("Message routed to dead-letter topic", extra={"error": error})
+            logger.warning(
+                "Message routed to dead-letter topic", extra={"error": error}
+            )
 
         except Exception as exc:
             logger.error(
@@ -110,7 +112,9 @@ class KafkaPublisher:
         if err:
             logger.error(f"Message delivery failed: {err}")
         else:
-            logger.debug(f"Message delivered to {msg.topic()} partition {msg.partition()}")
+            logger.debug(
+                f"Message delivered to {msg.topic()} partition {msg.partition()}"
+            )
 
 
 def _decimal_serializer(obj: object) -> str:

@@ -122,8 +122,8 @@ class BinanceWebSocketClient:
 
         async with websockets.connect(
             self._ws_url,
-            ping_interval=20,    # Send keepalive ping every 20s
-            ping_timeout=10,     # Treat as disconnected if no pong in 10s
+            ping_interval=20,  # Send keepalive ping every 20s
+            ping_timeout=10,  # Treat as disconnected if no pong in 10s
             close_timeout=5,
         ) as websocket:
             # Reset backoff counter on successful connection

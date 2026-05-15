@@ -19,6 +19,7 @@ from src.schema import BinanceTradeEvent
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def mock_producer():
     """Patches confluent_kafka.Producer for all publisher tests."""
@@ -41,22 +42,24 @@ def publisher(mock_producer) -> KafkaPublisher:
 
 @pytest.fixture
 def valid_event() -> BinanceTradeEvent:
-    return BinanceTradeEvent.model_validate({
-        "e": "trade",
-        "E": 1700000001000,
-        "s": "BTCUSDT",
-        "t": 999001,
-        "p": "43500.50",
-        "q": "0.002",
-        "T": 1700000000800,
-        "m": False,
-    })
+    return BinanceTradeEvent.model_validate(
+        {
+            "e": "trade",
+            "E": 1700000001000,
+            "s": "BTCUSDT",
+            "t": 999001,
+            "p": "43500.50",
+            "q": "0.002",
+            "T": 1700000000800,
+            "m": False,
+        }
+    )
 
 
 # ─── Initialisation Tests ──────────────────────────────────────────────────────
 
-class TestKafkaPublisherInit:
 
+class TestKafkaPublisherInit:
     def test_producer_created_with_sasl_config(self, mock_producer) -> None:
         with patch("src.publisher.Producer") as mock_class:
             mock_class.return_value = MagicMock()
@@ -78,8 +81,8 @@ class TestKafkaPublisherInit:
 
 # ─── publish_trade Tests ───────────────────────────────────────────────────────
 
-class TestPublishTrade:
 
+class TestPublishTrade:
     def test_produce_called_once(
         self, publisher: KafkaPublisher, mock_producer, valid_event: BinanceTradeEvent
     ) -> None:
@@ -141,6 +144,7 @@ class TestPublishTrade:
     ) -> None:
         """KafkaException must propagate — caller owns retry strategy."""
         from confluent_kafka import KafkaException
+
         mock_producer.produce.side_effect = KafkaException("broker unavailable")
         with pytest.raises(KafkaException):
             publisher.publish_trade(valid_event)
@@ -148,12 +152,14 @@ class TestPublishTrade:
 
 # ─── publish_dead_letter Tests ─────────────────────────────────────────────────
 
-class TestPublishDeadLetter:
 
+class TestPublishDeadLetter:
     def test_dead_letter_routed_to_correct_topic(
         self, publisher: KafkaPublisher, mock_producer
     ) -> None:
-        publisher.publish_dead_letter(raw_message='{"e": "aggTrade"}', error="wrong type")
+        publisher.publish_dead_letter(
+            raw_message='{"e": "aggTrade"}', error="wrong type"
+        )
         call_kwargs = mock_producer.produce.call_args[1]
         assert call_kwargs["topic"] == "btc-dead-letter"
 
@@ -180,7 +186,9 @@ class TestPublishDeadLetter:
         """Dead-letter failures must be swallowed — never crash the loop."""
         mock_producer.produce.side_effect = Exception("catastrophic failure")
         # Should not raise
-        publisher.publish_dead_letter(raw_message='{"broken": true}', error="test error")
+        publisher.publish_dead_letter(
+            raw_message='{"broken": true}', error="test error"
+        )
 
     def test_dead_letter_poll_called(
         self, publisher: KafkaPublisher, mock_producer
@@ -191,8 +199,8 @@ class TestPublishDeadLetter:
 
 # ─── flush Tests ──────────────────────────────────────────────────────────────
 
-class TestFlush:
 
+class TestFlush:
     def test_flush_delegates_to_producer(
         self, publisher: KafkaPublisher, mock_producer
     ) -> None:
@@ -202,8 +210,8 @@ class TestFlush:
 
 # ─── Decimal Serialiser Tests ──────────────────────────────────────────────────
 
-class TestDecimalSerializer:
 
+class TestDecimalSerializer:
     def test_decimal_serialised_as_string(self) -> None:
         assert _decimal_serializer(Decimal("123.456")) == "123.456"
 
