@@ -82,12 +82,12 @@ class KafkaPublisher:
 
     def publish_dead_letter(self, raw_message: str, error: str) -> None:
         """Publishes a rejected message to btc-dead-letter matching Bronze schema."""
-        
+
         # Bypass Pydantic envelope to strictly match your SQL schema
         payload_dict = {
             "raw_message": raw_message,
             "pipeline_error": error,
-            "logged_at": datetime.now(timezone.utc).isoformat()
+            "logged_at": datetime.now(timezone.utc).isoformat(),
         }
         payload = json.dumps(payload_dict).encode("utf-8")
 
@@ -98,7 +98,9 @@ class KafkaPublisher:
                 callback=self._delivery_callback,
             )
             self._producer.poll(0)
-            logger.warning("Message routed to dead-letter topic", extra={"error": error})
+            logger.warning(
+                "Message routed to dead-letter topic", extra={"error": error}
+            )
 
         except Exception as exc:
             logger.error(

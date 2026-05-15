@@ -11,6 +11,7 @@ os.environ["KAFKA_SASL_PASSWORD"] = "dummy_password"
 
 from src.main import app
 
+
 @pytest.fixture(autouse=True)
 def mock_background_services():
     """
@@ -22,11 +23,11 @@ def mock_background_services():
         patch("src.main.BinanceWebSocketClient") as mock_ws,
     ):
         mock_pub_instance = mock_pub.return_value
-        
+
         # FIX: Ensure both publisher.flush() AND publisher._producer.flush() return an integer.
         # This prevents the MagicMock > int TypeError during lifespan shutdown.
         mock_pub_instance.flush.return_value = 0
-        
+
         mock_producer = MagicMock()
         mock_producer.flush.return_value = 0
         mock_pub_instance._producer = mock_producer

@@ -170,7 +170,7 @@ class TestPublishDeadLetter:
         publisher.publish_dead_letter(raw_message="{}", error="missing required fields")
         raw_value: bytes = mock_producer.produce.call_args[1]["value"]
         parsed = json.loads(raw_value.decode("utf-8"))
-        
+
         assert parsed["pipeline_error"] == "missing required fields"
         assert parsed["raw_message"] == "{}"
         assert "logged_at" in parsed
@@ -199,10 +199,10 @@ class TestFlush:
     def test_flush_delegates_to_producer(
         self, publisher: KafkaPublisher, mock_producer
     ) -> None:
-        # Note: Depending on if your flush method on the publisher calls producer.flush directly, 
-        # this verifies it triggers correctly. If your publisher.flush doesn't exist anymore 
+        # Note: Depending on if your flush method on the publisher calls producer.flush directly,
+        # this verifies it triggers correctly. If your publisher.flush doesn't exist anymore
         # (since we call _producer.flush in main.py), you can delete this test class entirely.
-        if hasattr(publisher, 'flush'):
+        if hasattr(publisher, "flush"):
             publisher.flush()
             mock_producer.flush.assert_called_once()
 
