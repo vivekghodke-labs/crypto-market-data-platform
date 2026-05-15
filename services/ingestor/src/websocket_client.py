@@ -25,7 +25,6 @@ import random
 from typing import TYPE_CHECKING
 
 import websockets
-from websockets.exceptions import ConnectionClosed, WebSocketException
 from pydantic import ValidationError
 
 from .logger import get_logger

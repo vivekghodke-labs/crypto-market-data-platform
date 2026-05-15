@@ -10,8 +10,6 @@ import apache_beam as beam
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that, equal_to, is_empty
 from apache_beam.transforms.window import FixedWindows
-from apache_beam.transforms.trigger import AccumulationMode
-from apache_beam.utils.timestamp import Duration
 
 import pytest
 
@@ -46,23 +44,23 @@ def _make_raw(
     }).encode("utf-8")
 
 
-def _run_ohlcv_pipeline(raw_messages: list) -> list:
-    results = []
+def _run_ohlcv_pipeline(raw_messages: list, checker_fn) -> None:
+    """Runs the pipeline and applies the checker_fn using assert_that."""
     with TestPipeline() as p:
         raw = p | "Create" >> beam.Create(raw_messages)
         parsed = raw | "Parse" >> ParseAndValidate()
         valid = parsed["valid"]
         timestamped = valid | "Timestamp" >> beam.ParDo(AssignEventTimestamp())
-        windowed = timestamped | "Window" >> beam.WindowInto(
-            FixedWindows(60),
-            accumulation_mode=AccumulationMode.ACCUMULATING,
-            allowed_lateness=Duration(seconds=1),
-        )
+        
+        # Note: We omit accumulation_mode and allowed_lateness in the test graph 
+        # so that TestPipeline's batch execution doesn't falsely drop elements as late data.
+        windowed = timestamped | "Window" >> beam.WindowInto(FixedWindows(60))
+        
         keyed = windowed | "Key" >> beam.ParDo(ExtractKey())
         aggregated = keyed | "Aggregate" >> beam.CombinePerKey(OHLCVCombineFn())
         formatted = aggregated | "Format" >> beam.ParDo(FormatOHLCV())
-        formatted | "Collect" >> beam.Map(results.append)
-    return results
+        
+        assert_that(formatted, checker_fn)
 
 
 # ─── End-to-End Pipeline Tests ────────────────────────────────────────────────
@@ -70,75 +68,115 @@ def _run_ohlcv_pipeline(raw_messages: list) -> list:
 class TestPipelineEndToEnd:
 
     def test_single_trade_produces_one_ohlcv_record(self) -> None:
-        results = _run_ohlcv_pipeline([
+        def check(actual):
+            results = list(actual)
+            if len(results) != 1:
+                raise AssertionError(f"Expected 1 record, got {len(results)}: {results}")
+            r = results[0]
+            assert r["symbol"] == "BTCUSDT"
+            assert r["open"] == r["close"] == r["high"] == r["low"] == "43000.00"
+            assert r["trade_count"] == 1
+
+        _run_ohlcv_pipeline([
             _make_raw(1, "43000.00", "0.01", 1700000030000)
-        ])
-        assert len(results) == 1
-        r = results[0]
-        assert r["symbol"] == "BTCUSDT"
-        assert r["open"] == r["close"] == r["high"] == r["low"] == "43000.00"
-        assert r["trade_count"] == 1
+        ], check)
 
     def test_multiple_trades_same_window_aggregated(self) -> None:
+        def check(actual):
+            results = list(actual)
+            if len(results) != 1:
+                raise AssertionError(f"Expected 1 record, got {len(results)}: {results}")
+            r = results[0]
+            assert r["trade_count"] == 3
+            assert r["high"] == "44000.00"
+            assert r["low"] == "42500.00"
+            assert r["open"] == "43000.00"
+            assert r["close"] == "42500.00"
+
         raw = [
             _make_raw(1, "43000.00", "0.01", 1700000010000),
             _make_raw(2, "44000.00", "0.02", 1700000020000),
-            _make_raw(3, "42500.00", "0.01", 1700000050000),
+            # Changed 1700000050000 -> 1700000030000 so it falls inside the same 60s epoch window
+            _make_raw(3, "42500.00", "0.01", 1700000030000), 
         ]
-        results = _run_ohlcv_pipeline(raw)
-        assert len(results) == 1
-        r = results[0]
-        assert r["trade_count"] == 3
-        assert r["high"] == "44000.00"
-        assert r["low"] == "42500.00"
-        assert r["open"] == "43000.00"
-        assert r["close"] == "42500.00"
+        _run_ohlcv_pipeline(raw, check)
 
     def test_volume_calculated_correctly(self) -> None:
+        def check(actual):
+            results = list(actual)
+            if len(results) != 1:
+                raise AssertionError(f"Expected 1 record, got {len(results)}: {results}")
+            assert Decimal(results[0]["volume"]) == Decimal("1400.00")
+
         raw = [
             _make_raw(1, "40000.00", "0.01", 1700000010000),
             _make_raw(2, "50000.00", "0.02", 1700000020000),
         ]
-        results = _run_ohlcv_pipeline(raw)
-        assert len(results) == 1
-        assert Decimal(results[0]["volume"]) == Decimal("1400.00")
+        _run_ohlcv_pipeline(raw, check)
 
     def test_trades_different_windows_produce_separate_records(self) -> None:
+        def check(actual):
+            results = list(actual)
+            if len(results) != 2:
+                raise AssertionError(f"Expected 2 records, got {len(results)}: {results}")
+
         raw = [
-            _make_raw(1, "43000.00", "0.01", 1700000010000),  # window 0–60s
-            _make_raw(2, "44000.00", "0.01", 1700000090000),  # window 60–120s
+            _make_raw(1, "43000.00", "0.01", 1700000010000),  # window [...980, ...040)
+            _make_raw(2, "44000.00", "0.01", 1700000090000),  # window [...040, ...100)
         ]
-        results = _run_ohlcv_pipeline(raw)
-        assert len(results) == 2
+        _run_ohlcv_pipeline(raw, check)
 
     def test_invalid_message_does_not_produce_ohlcv(self) -> None:
-        results = _run_ohlcv_pipeline([b"not valid json"])
-        assert len(results) == 0
+        def check(actual):
+            results = list(actual)
+            if len(results) != 0:
+                raise AssertionError(f"Expected 0 records, got {len(results)}: {results}")
+
+        _run_ohlcv_pipeline([b"not valid json"], check)
 
     def test_mixed_valid_invalid_only_valid_aggregated(self) -> None:
+        def check(actual):
+            results = list(actual)
+            if len(results) != 1:
+                raise AssertionError(f"Expected 1 record, got {len(results)}: {results}")
+            assert results[0]["trade_count"] == 2
+
         raw = [
             _make_raw(1, "43000.00", "0.01", 1700000010000),
             b"garbage message",
             _make_raw(2, "44000.00", "0.01", 1700000020000),
         ]
-        results = _run_ohlcv_pipeline(raw)
-        assert len(results) == 1
-        assert results[0]["trade_count"] == 2
+        _run_ohlcv_pipeline(raw, check)
 
     def test_ohlcv_record_has_all_required_fields(self) -> None:
-        results = _run_ohlcv_pipeline([_make_raw(1, "43000.00", "0.01", 1700000010000)])
-        required = {"window_start", "window_end", "symbol", "open", "high", "low",
-                    "close", "volume", "trade_count", "ingested_at"}
-        assert required.issubset(results[0].keys())
+        def check(actual):
+            results = list(actual)
+            if not results:
+                raise AssertionError("Results list is empty")
+            required = {"window_start", "window_end", "symbol", "open", "high", "low",
+                        "close", "volume", "trade_count", "ingested_at"}
+            assert required.issubset(results[0].keys())
+            
+        _run_ohlcv_pipeline([_make_raw(1, "43000.00", "0.01", 1700000010000)], check)
 
     def test_window_start_before_window_end(self) -> None:
-        results = _run_ohlcv_pipeline([_make_raw(1, "43000.00", "0.01", 1700000010000)])
-        assert results[0]["window_start"] < results[0]["window_end"]
+        def check(actual):
+            results = list(actual)
+            if not results:
+                raise AssertionError("Results list is empty")
+            assert results[0]["window_start"] < results[0]["window_end"]
+
+        _run_ohlcv_pipeline([_make_raw(1, "43000.00", "0.01", 1700000010000)], check)
 
     def test_decimal_precision_preserved_as_string(self) -> None:
-        results = _run_ohlcv_pipeline([_make_raw(1, "43250.123456789", "0.00100001", 1700000010000)])
-        assert isinstance(results[0]["open"], str)
-        assert isinstance(results[0]["volume"], str)
+        def check(actual):
+            results = list(actual)
+            if not results:
+                raise AssertionError("Results list is empty")
+            assert isinstance(results[0]["open"], str)
+            assert isinstance(results[0]["volume"], str)
+
+        _run_ohlcv_pipeline([_make_raw(1, "43250.123456789", "0.00100001", 1700000010000)], check)
 
 
 # ─── Dead Letter Routing Tests ────────────────────────────────────────────────

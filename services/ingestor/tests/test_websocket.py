@@ -239,3 +239,91 @@ class TestStop:
         client._running = True
         await client.stop()
         assert client._running is False
+
+# ─── Run & Lifecycle Tests ─────────────────────────────────────────────────────
+
+class TestRun:
+
+    async def test_run_handles_cancelled_error(
+        self, client: BinanceWebSocketClient
+    ) -> None:
+        """Test that task cancellation cleanly shuts down the loop."""
+        # Mock _connect_and_consume to immediately raise CancelledError
+        with patch.object(
+            client, "_connect_and_consume", side_effect=asyncio.CancelledError
+        ):
+            await client.run()
+        
+        # Should exit the loop and set _running to False
+        assert client._running is False
+
+    async def test_run_handles_exception_and_backs_off(
+        self, client: BinanceWebSocketClient
+    ) -> None:
+        """Test that unhandled exceptions in the loop trigger a backoff sleep."""
+        # First call raises Exception, second call stops the loop to avoid infinite loop
+        call_counter = 0
+
+        async def mock_connect():
+            nonlocal call_counter
+            call_counter += 1
+            if call_counter == 1:
+                raise Exception("Network failure")
+            else:
+                client._running = False
+
+        with patch.object(client, "_connect_and_consume", side_effect=mock_connect):
+            with patch.object(client, "_backoff_sleep") as mock_backoff:
+                await client.run()
+
+        # It should have caught the exception and called _backoff_sleep once
+        mock_backoff.assert_called_once()
+        assert client._running is False
+
+    async def test_run_clean_exit_when_stopped(
+        self, client: BinanceWebSocketClient
+    ) -> None:
+        """Test that if _connect_and_consume returns cleanly and running=False, it exits."""
+        async def mock_connect():
+            await client.stop()
+
+        with patch.object(client, "_connect_and_consume", side_effect=mock_connect):
+            with patch.object(client, "_backoff_sleep") as mock_backoff:
+                await client.run()
+
+        # Loop should exit gracefully without calling backoff
+        mock_backoff.assert_not_called()
+        assert client._running is False
+
+
+# ─── Connect and Consume Tests ─────────────────────────────────────────────────
+
+class TestConnectAndConsume:
+
+    @patch("src.websocket_client.websockets.connect")
+    async def test_connect_and_consume_processes_messages(
+        self, mock_connect: MagicMock, client: BinanceWebSocketClient
+    ) -> None:
+        """Test the async context manager and async iterator of the websocket."""
+        # 1. Setup mock websocket that yields two messages
+        mock_ws = AsyncMock()
+        mock_ws.__aiter__.return_value = ["message_1", "message_2"]
+        
+        # 2. Setup the mock context manager returned by websockets.connect
+        mock_context_manager = AsyncMock()
+        mock_context_manager.__aenter__.return_value = mock_ws
+        mock_connect.return_value = mock_context_manager
+
+        # Set an arbitrary reconnect attempt to verify it gets reset
+        client._reconnect_attempt = 5
+
+        with patch.object(client, "_process_message") as mock_process:
+            await client._connect_and_consume()
+
+        # Assertions
+        assert client._reconnect_attempt == 0
+        assert mock_process.call_count == 2
+        mock_process.assert_has_calls([
+            call("message_1"),
+            call("message_2")
+        ])

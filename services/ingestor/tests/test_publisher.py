@@ -9,7 +9,7 @@ Strategy:
 
 import json
 from decimal import Decimal
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 

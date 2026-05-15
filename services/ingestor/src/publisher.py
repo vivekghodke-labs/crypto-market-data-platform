@@ -11,7 +11,7 @@ Design:
 import json
 from decimal import Decimal
 
-from confluent_kafka import Producer, KafkaError, KafkaException
+from confluent_kafka import Producer, KafkaException
 
 from .logger import get_logger
 from .schema import BinanceTradeEvent, DeadLetterEnvelope
