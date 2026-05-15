@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches-ignore: [main]   # feature/* and dev branches — build + test only
+    branches-ignore: [main]
 
 env:
   PYTHON_VERSION: "3.12"
@@ -137,8 +137,8 @@ jobs:
 
       - name: dbt compile
         env:
-          DBT_TARGET: dev
-        run: dbt compile --profiles-dir . --target dev --no-populate-cache
+          DBT_TARGET: ci
+        run: dbt compile --profiles-dir . --target ci --no-populate-cache
 
       - name: Validate custom test SQL files
         run: |

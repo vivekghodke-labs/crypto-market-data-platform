@@ -1,21 +1,10 @@
 """
-test_pipeline.py
-----------------
 End-to-end pipeline tests using Apache Beam's TestPipeline.
-
-Strategy:
-  - build_pipeline() is called with a TestPipeline instead of a real pipeline.
-  - BigQuery WriteToBigQuery is mocked at the IO level — no GCP credentials.
-  - Pub/Sub ReadFromPubSub is replaced with beam.Create() in test fixtures.
-  - Tests verify the full transform chain produces correct OHLCV output.
-
-These tests complement test_transforms.py by validating transform composition
-(correct wiring, windowing behaviour, routing of valid vs dead-letter data).
+Runs from inside the beam/ directory — imports are src-relative.
 """
 
 import json
 from decimal import Decimal
-from unittest.mock import patch, MagicMock
 
 import apache_beam as beam
 from apache_beam.testing.test_pipeline import TestPipeline
@@ -26,8 +15,8 @@ from apache_beam.utils.timestamp import Duration
 
 import pytest
 
-from beam.src.schema import TradeRecord
-from beam.src.transforms import (
+from src.schema import TradeRecord
+from src.transforms import (
     ParseAndValidate,
     AssignEventTimestamp,
     ExtractKey,
@@ -47,51 +36,32 @@ def _make_raw(
     symbol: str = "BTCUSDT",
 ) -> bytes:
     return json.dumps({
-        "e": "trade",
-        "E": trade_time_ms + 100,
-        "s": symbol,
-        "t": trade_id,
-        "p": price,
-        "q": quantity,
-        "T": trade_time_ms,
-        "m": False,
+        "event_type": "trade",
+        "event_time_ms": trade_time_ms + 100,
+        "symbol": symbol,
+        "trade_id": trade_id,
+        "price": price,
+        "quantity": quantity,
+        "trade_time_ms": trade_time_ms,
     }).encode("utf-8")
 
 
-def _run_ohlcv_pipeline(raw_messages: list[bytes]) -> list[dict]:
-    """
-    Runs the OHLCV transform chain on synthetic raw messages.
-    Returns the list of OHLCV dicts produced (as FormatOHLCV output).
-
-    Uses a 60-second fixed window with a 1-second lateness allowance
-    for test speed — same logic as production, tighter tolerance.
-    """
+def _run_ohlcv_pipeline(raw_messages: list) -> list:
     results = []
-
     with TestPipeline() as p:
         raw = p | "Create" >> beam.Create(raw_messages)
         parsed = raw | "Parse" >> ParseAndValidate()
-
         valid = parsed["valid"]
-
         timestamped = valid | "Timestamp" >> beam.ParDo(AssignEventTimestamp())
-
         windowed = timestamped | "Window" >> beam.WindowInto(
             FixedWindows(60),
             accumulation_mode=AccumulationMode.ACCUMULATING,
             allowed_lateness=Duration(seconds=1),
         )
-
         keyed = windowed | "Key" >> beam.ParDo(ExtractKey())
         aggregated = keyed | "Aggregate" >> beam.CombinePerKey(OHLCVCombineFn())
         formatted = aggregated | "Format" >> beam.ParDo(FormatOHLCV())
-
-        # Collect results via a side-output list trick compatible with TestPipeline
-        def collect(element):
-            results.append(element)
-
-        formatted | "Collect" >> beam.Map(collect)
-
+        formatted | "Collect" >> beam.Map(results.append)
     return results
 
 
@@ -100,20 +70,16 @@ def _run_ohlcv_pipeline(raw_messages: list[bytes]) -> list[dict]:
 class TestPipelineEndToEnd:
 
     def test_single_trade_produces_one_ohlcv_record(self) -> None:
-        raw = [_make_raw(trade_id=1, price="43000.00", quantity="0.01",
-                          trade_time_ms=1700000030000)]
-        results = _run_ohlcv_pipeline(raw)
+        results = _run_ohlcv_pipeline([
+            _make_raw(1, "43000.00", "0.01", 1700000030000)
+        ])
         assert len(results) == 1
-        record = results[0]
-        assert record["symbol"] == "BTCUSDT"
-        assert record["open"] == "43000.00"
-        assert record["close"] == "43000.00"
-        assert record["high"] == "43000.00"
-        assert record["low"] == "43000.00"
-        assert record["trade_count"] == 1
+        r = results[0]
+        assert r["symbol"] == "BTCUSDT"
+        assert r["open"] == r["close"] == r["high"] == r["low"] == "43000.00"
+        assert r["trade_count"] == 1
 
     def test_multiple_trades_same_window_aggregated(self) -> None:
-        # All trades within the same 60-second window (1700000000–1700000060)
         raw = [
             _make_raw(1, "43000.00", "0.01", 1700000010000),
             _make_raw(2, "44000.00", "0.02", 1700000020000),
@@ -121,17 +87,17 @@ class TestPipelineEndToEnd:
         ]
         results = _run_ohlcv_pipeline(raw)
         assert len(results) == 1
-        record = results[0]
-        assert record["trade_count"] == 3
-        assert record["high"] == "44000.00"
-        assert record["low"] == "42500.00"
-        assert record["open"] == "43000.00"   # earliest trade_time_ms
-        assert record["close"] == "42500.00"  # latest trade_time_ms
+        r = results[0]
+        assert r["trade_count"] == 3
+        assert r["high"] == "44000.00"
+        assert r["low"] == "42500.00"
+        assert r["open"] == "43000.00"
+        assert r["close"] == "42500.00"
 
     def test_volume_calculated_correctly(self) -> None:
         raw = [
-            _make_raw(1, "40000.00", "0.01", 1700000010000),  # 400.00
-            _make_raw(2, "50000.00", "0.02", 1700000020000),  # 1000.00
+            _make_raw(1, "40000.00", "0.01", 1700000010000),
+            _make_raw(2, "50000.00", "0.02", 1700000020000),
         ]
         results = _run_ohlcv_pipeline(raw)
         assert len(results) == 1
@@ -139,15 +105,14 @@ class TestPipelineEndToEnd:
 
     def test_trades_different_windows_produce_separate_records(self) -> None:
         raw = [
-            _make_raw(1, "43000.00", "0.01", 1700000010000),  # window 1: 0–60s
-            _make_raw(2, "44000.00", "0.01", 1700000090000),  # window 2: 60–120s
+            _make_raw(1, "43000.00", "0.01", 1700000010000),  # window 0–60s
+            _make_raw(2, "44000.00", "0.01", 1700000090000),  # window 60–120s
         ]
         results = _run_ohlcv_pipeline(raw)
         assert len(results) == 2
 
     def test_invalid_message_does_not_produce_ohlcv(self) -> None:
-        raw = [b"not valid json"]
-        results = _run_ohlcv_pipeline(raw)
+        results = _run_ohlcv_pipeline([b"not valid json"])
         assert len(results) == 0
 
     def test_mixed_valid_invalid_only_valid_aggregated(self) -> None:
@@ -161,30 +126,19 @@ class TestPipelineEndToEnd:
         assert results[0]["trade_count"] == 2
 
     def test_ohlcv_record_has_all_required_fields(self) -> None:
-        raw = [_make_raw(1, "43000.00", "0.01", 1700000010000)]
-        results = _run_ohlcv_pipeline(raw)
-        record = results[0]
-        required_fields = {
-            "window_start", "window_end", "symbol",
-            "open", "high", "low", "close",
-            "volume", "trade_count", "ingested_at",
-        }
-        assert required_fields.issubset(record.keys())
+        results = _run_ohlcv_pipeline([_make_raw(1, "43000.00", "0.01", 1700000010000)])
+        required = {"window_start", "window_end", "symbol", "open", "high", "low",
+                    "close", "volume", "trade_count", "ingested_at"}
+        assert required.issubset(results[0].keys())
 
     def test_window_start_before_window_end(self) -> None:
-        raw = [_make_raw(1, "43000.00", "0.01", 1700000010000)]
-        results = _run_ohlcv_pipeline(raw)
-        record = results[0]
-        assert record["window_start"] < record["window_end"]
+        results = _run_ohlcv_pipeline([_make_raw(1, "43000.00", "0.01", 1700000010000)])
+        assert results[0]["window_start"] < results[0]["window_end"]
 
     def test_decimal_precision_preserved_as_string(self) -> None:
-        """Decimal values must survive the pipeline as strings, not floats."""
-        raw = [_make_raw(1, "43250.123456789", "0.00100001", 1700000010000)]
-        results = _run_ohlcv_pipeline(raw)
-        record = results[0]
-        # Verify they are strings (not floats) in the output dict
-        assert isinstance(record["open"], str)
-        assert isinstance(record["volume"], str)
+        results = _run_ohlcv_pipeline([_make_raw(1, "43250.123456789", "0.00100001", 1700000010000)])
+        assert isinstance(results[0]["open"], str)
+        assert isinstance(results[0]["volume"], str)
 
 
 # ─── Dead Letter Routing Tests ────────────────────────────────────────────────
@@ -195,7 +149,6 @@ class TestDeadLetterRouting:
         with TestPipeline() as p:
             raw = p | beam.Create([b"bad json", b"also bad"])
             parsed = raw | ParseAndValidate()
-
             assert_that(parsed["valid"], is_empty(), label="valid_empty")
             assert_that(
                 parsed[DEAD_LETTER_TAG],

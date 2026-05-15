@@ -40,3 +40,9 @@ crypto_platform:
         # MotherDuck performance optimizations
         memory_limit: '2GB'
         threads: 8
+
+    ci:
+      type: duckdb
+      path: ":memory:"
+      schema: dbt_dev
+      threads: 4

@@ -1,17 +1,6 @@
 """
-test_transforms.py
-------------------
 Unit tests for all Beam PTransforms in transforms.py.
-
-All tests use Apache Beam's TestPipeline — an in-memory runner that
-executes the pipeline synchronously with no GCP credentials required.
-
-Test strategy:
-  - Each transform is tested in isolation where possible.
-  - OHLCVCombineFn is tested directly (not via pipeline) for
-    accumulator logic — faster and more precise than pipeline tests.
-  - ParseAndValidate is tested end-to-end through the pipeline because
-    tagged outputs require the Beam runner to materialise both branches.
+Runs from inside the beam/ directory — imports are src-relative.
 """
 
 import json
@@ -20,12 +9,11 @@ from decimal import Decimal
 import apache_beam as beam
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that, equal_to, is_empty
-from apache_beam.transforms.window import FixedWindows
 
 import pytest
 
-from beam.src.schema import TradeRecord, OHLCVAccumulator
-from beam.src.transforms import (
+from src.schema import TradeRecord, OHLCVAccumulator
+from src.transforms import (
     ParseAndValidate,
     AssignEventTimestamp,
     ExtractKey,
@@ -48,14 +36,13 @@ def _make_raw_message(
     event_time_ms: int = 1700000030100,
 ) -> bytes:
     payload = {
-        "e": event_type,
-        "E": event_time_ms,
-        "s": symbol,
-        "t": trade_id,
-        "p": price,
-        "q": quantity,
-        "T": trade_time_ms,
-        "m": False,
+        "event_type": event_type,
+        "event_time_ms": event_time_ms,
+        "symbol": symbol,
+        "trade_id": trade_id,
+        "price": price,
+        "quantity": quantity,
+        "trade_time_ms": trade_time_ms,
     }
     return json.dumps(payload).encode("utf-8")
 
@@ -85,7 +72,6 @@ class TestParseAndValidate:
         with TestPipeline() as p:
             raw = p | beam.Create([_make_raw_message()])
             result = raw | ParseAndValidate()
-
             assert_that(
                 result["valid"],
                 equal_to([
@@ -106,7 +92,6 @@ class TestParseAndValidate:
         with TestPipeline() as p:
             raw = p | beam.Create([b"not valid json {{{"])
             result = raw | ParseAndValidate()
-
             assert_that(result["valid"], is_empty(), label="valid_empty")
             assert_that(
                 result[DEAD_LETTER_TAG],
@@ -118,19 +103,15 @@ class TestParseAndValidate:
         with TestPipeline() as p:
             raw = p | beam.Create([_make_raw_message(event_type="aggTrade")])
             result = raw | ParseAndValidate()
-
             assert_that(result["valid"], is_empty(), label="valid_empty")
-            assert_that(
-                result[DEAD_LETTER_TAG],
-                equal_to([_make_raw_message(event_type="aggTrade").decode()]),
-                label="dead_letter_check",
-            )
+            assert_that(result[DEAD_LETTER_TAG], equal_to(
+                [_make_raw_message(event_type="aggTrade").decode()]
+            ), label="dead_letter_check")
 
     def test_wrong_symbol_routes_to_dead_letter(self) -> None:
         with TestPipeline() as p:
             raw = p | beam.Create([_make_raw_message(symbol="ETHUSDT")])
             result = raw | ParseAndValidate()
-
             assert_that(result["valid"], is_empty(), label="valid_empty")
             assert_that(result[DEAD_LETTER_TAG], equal_to(
                 [_make_raw_message(symbol="ETHUSDT").decode()]
@@ -152,7 +133,7 @@ class TestParseAndValidate:
             assert_that(result["valid"], is_empty(), label="valid_empty")
 
     def test_missing_field_routes_to_dead_letter(self) -> None:
-        incomplete = json.dumps({"e": "trade", "s": "BTCUSDT"}).encode()
+        incomplete = json.dumps({"event_type": "trade", "symbol": "BTCUSDT"}).encode()
         with TestPipeline() as p:
             raw = p | beam.Create([incomplete])
             result = raw | ParseAndValidate()
@@ -209,16 +190,11 @@ class TestExtractKey:
 # ─── OHLCVCombineFn Tests ─────────────────────────────────────────────────────
 
 class TestOHLCVCombineFn:
-    """
-    Tests OHLCVCombineFn directly (not through the pipeline).
-    This gives precise control over accumulator state and is faster
-    than spinning up a TestPipeline for each case.
-    """
 
     def setup_method(self):
         self.fn = OHLCVCombineFn()
 
-    def _accumulate(self, trades: list[TradeRecord]) -> OHLCVAccumulator:
+    def _accumulate(self, trades: list) -> OHLCVAccumulator:
         acc = self.fn.create_accumulator()
         for trade in trades:
             acc = self.fn.add_input(acc, trade)
@@ -238,8 +214,7 @@ class TestOHLCVCombineFn:
             _make_trade_record(trade_id=2, price="45000.00", trade_time_ms=2000),
             _make_trade_record(trade_id=3, price="42000.00", trade_time_ms=3000),
         ]
-        acc = self._accumulate(trades)
-        assert acc.high == Decimal("45000.00")
+        assert self._accumulate(trades).high == Decimal("45000.00")
 
     def test_low_is_minimum_price(self) -> None:
         trades = [
@@ -247,63 +222,51 @@ class TestOHLCVCombineFn:
             _make_trade_record(trade_id=2, price="45000.00", trade_time_ms=2000),
             _make_trade_record(trade_id=3, price="42000.00", trade_time_ms=3000),
         ]
-        acc = self._accumulate(trades)
-        assert acc.low == Decimal("42000.00")
+        assert self._accumulate(trades).low == Decimal("42000.00")
 
     def test_open_is_earliest_trade_price(self) -> None:
         trades = [
             _make_trade_record(trade_id=2, price="44000.00", trade_time_ms=2000),
-            _make_trade_record(trade_id=1, price="43000.00", trade_time_ms=1000),  # earliest
+            _make_trade_record(trade_id=1, price="43000.00", trade_time_ms=1000),
             _make_trade_record(trade_id=3, price="45000.00", trade_time_ms=3000),
         ]
-        acc = self._accumulate(trades)
-        assert acc.open == Decimal("43000.00")
+        assert self._accumulate(trades).open == Decimal("43000.00")
 
     def test_close_is_latest_trade_price(self) -> None:
         trades = [
             _make_trade_record(trade_id=1, price="43000.00", trade_time_ms=1000),
-            _make_trade_record(trade_id=3, price="45000.00", trade_time_ms=3000),  # latest
+            _make_trade_record(trade_id=3, price="45000.00", trade_time_ms=3000),
             _make_trade_record(trade_id=2, price="44000.00", trade_time_ms=2000),
         ]
-        acc = self._accumulate(trades)
-        assert acc.close == Decimal("45000.00")
+        assert self._accumulate(trades).close == Decimal("45000.00")
 
     def test_volume_is_sum_of_price_times_quantity(self) -> None:
         trades = [
-            _make_trade_record(trade_id=1, price="40000.00", quantity="0.01",  trade_time_ms=1000),
-            _make_trade_record(trade_id=2, price="50000.00", quantity="0.02",  trade_time_ms=2000),
+            _make_trade_record(trade_id=1, price="40000.00", quantity="0.01", trade_time_ms=1000),
+            _make_trade_record(trade_id=2, price="50000.00", quantity="0.02", trade_time_ms=2000),
         ]
-        acc = self._accumulate(trades)
-        # 40000 × 0.01 + 50000 × 0.02 = 400 + 1000 = 1400
-        assert acc.volume == Decimal("1400.00")
+        assert self._accumulate(trades).volume == Decimal("1400.00")
 
     def test_trade_count_correct(self) -> None:
         trades = [_make_trade_record(trade_id=i, trade_time_ms=i * 1000) for i in range(1, 6)]
-        acc = self._accumulate(trades)
-        assert acc.trade_count == 5
+        assert self._accumulate(trades).trade_count == 5
 
     def test_empty_accumulator_is_empty(self) -> None:
-        acc = self.fn.create_accumulator()
-        assert acc.is_empty is True
+        assert self.fn.create_accumulator().is_empty is True
 
     def test_merge_two_accumulators(self) -> None:
-        acc1 = self._accumulate([
-            _make_trade_record(trade_id=1, price="43000.00", trade_time_ms=1000),
-        ])
-        acc2 = self._accumulate([
-            _make_trade_record(trade_id=2, price="45000.00", trade_time_ms=2000),
-        ])
+        acc1 = self._accumulate([_make_trade_record(trade_id=1, price="43000.00", trade_time_ms=1000)])
+        acc2 = self._accumulate([_make_trade_record(trade_id=2, price="45000.00", trade_time_ms=2000)])
         merged = self.fn.merge_accumulators([acc1, acc2])
-        assert merged.open == Decimal("43000.00")   # earliest
-        assert merged.close == Decimal("45000.00")  # latest
+        assert merged.open == Decimal("43000.00")
+        assert merged.close == Decimal("45000.00")
         assert merged.high == Decimal("45000.00")
         assert merged.low == Decimal("43000.00")
         assert merged.trade_count == 2
 
     def test_merge_with_empty_accumulator(self) -> None:
         acc = self._accumulate([_make_trade_record(price="43000.00")])
-        empty = self.fn.create_accumulator()
-        merged = self.fn.merge_accumulators([acc, empty])
+        merged = self.fn.merge_accumulators([acc, self.fn.create_accumulator()])
         assert merged.trade_count == 1
         assert not merged.is_empty
 
@@ -320,7 +283,6 @@ class TestOHLCVCombineFn:
 class TestHelpers:
 
     def test_ms_to_iso_converts_correctly(self) -> None:
-        # 1700000000000ms = 2023-11-14T22:13:20+00:00
         result = _ms_to_iso(1700000000000)
         assert "2023-11-14" in result
         assert "+00:00" in result or "Z" in result or "UTC" in result
