@@ -1,0 +1,51 @@
+# Render Infrastructure as Code
+#
+# Deploy: Render auto-reads this file from repo root on service creation.
+# Secrets: All envVars marked sync:false must be set manually in Render dashboard.
+#
+# Health check: /ping (always 200) — prevents Render from restarting on
+# transient Binance WS flap. UptimeRobot monitors /health for real alerting.
+
+services:
+  - type: web
+    name: crypto-ingestor
+    runtime: docker
+    dockerfilePath: ./services/ingestor/Dockerfile
+    dockerContext: ./services/ingestor
+
+    # Free tier: 512MB RAM, shared CPU, linux/amd64
+    plan: free
+
+    # Render health check — use /ping, not /health
+    # /health returns 503 when WS is flapping — would cause unnecessary restarts
+    healthCheckPath: /ping
+
+    # Auto-deploy only on push to main (PR builds handled by CI)
+    branch: main
+    autoDeploy: true
+
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+
+      - key: LOG_LEVEL
+        value: INFO
+
+      - key: BINANCE_WS_URL
+        value: wss://stream.binance.com:9443/ws/btcusdt@trade
+
+      - key: KAFKA_TOPIC_RAW_TRADES
+        value: btc-raw-trades
+
+      - key: KAFKA_TOPIC_DEAD_LETTER
+        value: btc-dead-letter
+
+      # Set these manually in Render dashboard → Environment
+      - key: KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+
+      - key: KAFKA_SASL_USERNAME
+        sync: false
+
+      - key: KAFKA_SASL_PASSWORD
+        sync: false

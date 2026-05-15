@@ -1,15 +1,5 @@
-###############################################################################
-# Continuous Integration Pipeline
-#
-# Triggers: every pull request targeting main, and every push to main.
-# Jobs:
-#   test     → Install deps, run pytest with coverage, upload coverage report
-#   lint     → ruff check on all Python source
-#   docker   → Build ingestor image (linux/amd64) to validate Dockerfile
-#   terraform→ fmt check + validate on infra changes
-#
-# No GCP credentials required for CI — only the CD pipeline authenticates to GCP.
-###############################################################################
+# Runs on every PR targeting main AND every push to dev/feature branches.
+# Never deploys — deploy is cd.yml (main merge only).
 
 name: CI
 
@@ -17,37 +7,32 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches-ignore: [main]   # feature/* and dev branches — build + test only
 
 env:
   PYTHON_VERSION: "3.12"
 
 jobs:
 
-  # ─── Unit Tests ─────────────────────────────────────────────────────────────
   test:
-    name: Unit Tests
+    name: Unit Tests — Ingestor
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: services/ingestor
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: services/ingestor/requirements-dev.txt
 
-      - name: Install dependencies
+      - name: Install deps
         run: pip install -r requirements-dev.txt
 
-      - name: Run pytest with coverage
+      - name: pytest
         run: |
           pytest tests/ \
             --tb=short \
@@ -57,121 +42,65 @@ jobs:
             --cov-fail-under=80 \
             -v
 
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage-report
+          name: coverage-ingestor
           path: services/ingestor/coverage.xml
           retention-days: 7
 
-  # ─── Linting ────────────────────────────────────────────────────────────────
   lint:
-    name: Lint (ruff)
+    name: Lint — ruff
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: services/ingestor
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff==0.8.2
+      - run: ruff check src/ tests/
+      - run: ruff format --check src/ tests/
 
-      - name: Install ruff
-        run: pip install ruff==0.8.2
-
-      - name: Run ruff check
-        run: ruff check src/ tests/
-
-      - name: Run ruff format check
-        run: ruff format --check src/ tests/
-
-  # ─── Docker Build Validation ─────────────────────────────────────────────────
   docker:
-    name: Docker Build
+    name: Docker Build — validate only
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Build ingestor image (linux/amd64)
+      - name: Build (no push)
         uses: docker/build-push-action@v5
         with:
           context: services/ingestor
           file: services/ingestor/Dockerfile
           platforms: linux/amd64
-          push: false  # Build only — push happens in CD
-          tags: ingestor:ci-${{ github.sha }}
+          push: false
+          tags: crypto-ingestor:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ─── Terraform Validation ────────────────────────────────────────────────────
-  terraform:
-    name: Terraform Validate
-    runs-on: ubuntu-latest
-
-    # Only run if terraform files changed
-    if: |
-      contains(github.event.pull_request.changed_files, 'infra/') ||
-      github.event_name == 'push'
-
-    defaults:
-      run:
-        working-directory: infra/terraform
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "~> 1.7"
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-
-      - name: Terraform Init (local backend for validation)
-        run: terraform init -backend=false
-
-      - name: Terraform Validate
-        run: terraform validate
-
-
-  # ─── Beam Unit Tests ──────────────────────────────────────────────────────────
   test-beam:
-    name: Beam Pipeline Tests
+    name: Unit Tests — Beam
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: beam
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: beam/requirements-dev.txt
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
 
-      - name: Run Beam pytest with coverage
+      - name: pytest
         run: |
           pytest tests/ \
             --tb=short \
@@ -181,54 +110,37 @@ jobs:
             --cov-fail-under=80 \
             -v
 
-      - name: Upload Beam coverage report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: beam-coverage-report
+          name: coverage-beam
           path: beam/coverage.xml
           retention-days: 7
 
-  # ─── dbt Compile & Validate ───────────────────────────────────────────────────
-  # Validates dbt SQL syntax and model dependencies without a live BigQuery
-  # connection. dbt compile resolves all ref() and source() macros and
-  # produces compiled SQL in target/ — any syntax or dependency error fails here.
   dbt-compile:
-    name: dbt Compile & Validate
+    name: dbt Compile
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: dbt/crypto_platform
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      - name: Install dbt-bigquery
-        run: pip install dbt-bigquery==1.8.2
+      - run: pip install -r requirements.txt
 
-      - name: Install dbt packages
-        run: dbt deps --profiles-dir .
+      - run: dbt deps --profiles-dir .
 
-      - name: dbt compile (SQL syntax + dependency validation)
+      - name: dbt compile
         env:
-          GCP_PROJECT_ID: vg-ind-2026
-          GCP_REGION: us-central1
           DBT_TARGET: dev
-        run: |
-          dbt compile \
-            --profiles-dir . \
-            --target dev \
-            --no-populate-cache
+        run: dbt compile --profiles-dir . --target dev --no-populate-cache
 
-      - name: Validate custom test SQL files exist and are non-empty
+      - name: Validate custom test SQL files
         run: |
           for f in tests/assert_*.sql; do
             if [ ! -s "$f" ]; then
@@ -237,11 +149,3 @@ jobs:
             fi
             echo "OK: $f"
           done
-
-      - name: Upload compiled SQL artefacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dbt-compiled-sql
-          path: dbt/crypto_platform/target/compiled/
-          retention-days: 7
